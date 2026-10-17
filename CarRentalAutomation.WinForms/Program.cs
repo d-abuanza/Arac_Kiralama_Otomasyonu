@@ -34,7 +34,10 @@ static class Program
         var database = new MySqlDatabase(connectionString);
         ICollectionRepository collections = new MySqlCollectionRepository(database, userId);
         ISiteCredentialRepository siteCredentials = new MySqlSiteCredentialRepository(database);
-        Application.Run(new MainForm(collections, database, siteCredentials, userId));
+        var paymentAddress = configuration["Payments:ApiUrl"] ?? "http://127.0.0.1:5158";
+        using var payments = new PaymentApiClient(paymentAddress);
+        var attempts = new FileRentalAttemptStore(paymentAddress, userId);
+        Application.Run(new MainForm(collections, database, siteCredentials, userId, payments, attempts));
         }
         catch (Exception ex)
         {

@@ -89,6 +89,7 @@ public sealed class MySqlCollectionRepository(MySqlDatabase database, long userI
             var id = Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken));
 
             const string insertCar = "INSERT INTO Cars (CollectionId, Model, RentalCompany, Transmission, FuelType, Price, Currency, SourceUrl, IsMockData, ScrapedAt) VALUES (@collectionId,@model,@company,@transmission,@fuel,@price,@currency,@url,@mock,@scrapedAt)";
+            var persistedCars = new List<CarOffer>();
             foreach (var car in cars)
             {
                 await using var carCommand = new MySqlCommand(insertCar, connection, transaction);
@@ -103,9 +104,10 @@ public sealed class MySqlCollectionRepository(MySqlDatabase database, long userI
                 carCommand.Parameters.AddWithValue("@mock", car.IsMockData);
                 carCommand.Parameters.AddWithValue("@scrapedAt", car.ScrapedAt ?? DateTime.UtcNow);
                 await carCommand.ExecuteNonQueryAsync(cancellationToken);
+                persistedCars.Add(car with { Id = carCommand.LastInsertedId });
             }
             await transaction.CommitAsync(cancellationToken);
-            return new SavedCollection(id, name.Trim(), criteria, DateTime.Now, cars.ToArray());
+            return new SavedCollection(id, name.Trim(), criteria, DateTime.Now, persistedCars);
         }
         catch
         {
@@ -145,7 +147,7 @@ public sealed class MySqlCollectionRepository(MySqlDatabase database, long userI
                 },
                 reader.GetDateTime("CreatedAt"), []);
         }
-        const string carsSql = "SELECT Model, RentalCompany, Transmission, FuelType, Price, Currency, SourceUrl, IsMockData, ScrapedAt FROM Cars WHERE CollectionId=@id ORDER BY Id";
+        const string carsSql = "SELECT Id, Model, RentalCompany, Transmission, FuelType, Price, Currency, SourceUrl, IsMockData, ScrapedAt FROM Cars WHERE CollectionId=@id ORDER BY Id";
         await using var carsCommand = new MySqlCommand(carsSql, connection);
         carsCommand.Parameters.AddWithValue("@id", id);
         var cars = new List<CarOffer>();
@@ -154,7 +156,7 @@ public sealed class MySqlCollectionRepository(MySqlDatabase database, long userI
             cars.Add(new CarOffer(carsReader.GetString("Model"), carsReader.GetString("RentalCompany"), carsReader.GetString("Transmission"),
                 carsReader.GetString("FuelType"), carsReader.GetDecimal("Price"), carsReader.GetString("Currency"),
                 carsReader.IsDBNull(carsReader.GetOrdinal("SourceUrl")) ? null : carsReader.GetString("SourceUrl"), carsReader.GetBoolean("IsMockData"))
-                { ScrapedAt = carsReader.GetDateTime("ScrapedAt") });
+                { Id = carsReader.GetInt64("Id"), ScrapedAt = carsReader.GetDateTime("ScrapedAt") });
         return collection with { Cars = cars };
     }
 

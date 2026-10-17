@@ -4,12 +4,11 @@ using System.Text.RegularExpressions;
 
 namespace CarRentalAutomation.WinForms;
 
-public sealed class MainForm : Form
+public sealed partial class MainForm : Form
 {
     private readonly ICollectionRepository _collections;
     private readonly IDatabaseConnectionCheck _database;
     private readonly ISiteCredentialRepository _siteCredentials;
-    private readonly IBookingService _bookings = new MockBookingService();
     private readonly IPngReportExporter _reports = new PngReportExporter();
     private readonly Yolcu360Browser _browser = new();
     private readonly BackgroundBrowserHost _browserHost;
@@ -50,12 +49,15 @@ public sealed class MainForm : Form
     private List<CarOffer> _offers = [];
     private List<SavedCollection> _saved = [];
 
-    public MainForm(ICollectionRepository collections, IDatabaseConnectionCheck database, ISiteCredentialRepository siteCredentials, long userId)
+    public MainForm(ICollectionRepository collections, IDatabaseConnectionCheck database, ISiteCredentialRepository siteCredentials, long userId,
+        IRentalPaymentApi? payments = null, IRentalAttemptStore? paymentAttempts = null)
     {
         _collections = collections;
         _database = database;
         _siteCredentials = siteCredentials;
         _userId = userId;
+        _payments = payments;
+        _rentalPayments = payments is not null && paymentAttempts is not null ? new RentalPaymentCoordinator(payments, paymentAttempts) : null;
         _browserHost = new BackgroundBrowserHost(_browser.Control);
         _browserHost.VerificationCancelled += CancelHumanVerification;
         _browser.StateChanged += BrowserStateChanged;
@@ -106,6 +108,14 @@ public sealed class MainForm : Form
         historyButtons.Controls.AddRange([Button("Yukle", LoadSelected), Button("Sil", DeleteSelected), Button("PNG disa aktar", ExportSelected)]);
         historyTab.Controls.Add(_history); historyTab.Controls.Add(historyButtons);
         _tabs.TabPages.Add(resultsTab); _tabs.TabPages.Add(historyTab);
+        _paymentsPage = new PaymentsPage(_payments);
+        var paymentsTab = new TabPage("Ödemeler") { Name = "tabPayments" };
+        paymentsTab.Controls.Add(_paymentsPage);
+        _tabs.TabPages.Add(paymentsTab);
+        _tabs.SelectedIndexChanged += async (_, _) =>
+        {
+            if (_tabs.SelectedTab == paymentsTab) await _paymentsPage.RefreshAsync();
+        };
         root.Controls.Add(searchPanel, 0, 0); root.Controls.Add(_otpPanel, 0, 1); root.Controls.Add(_tabs, 0, 2); root.Controls.Add(_status, 0, 3);
         Controls.Add(root);
         btnVerifyOtp.Click += VerifyOtpClicked;
@@ -292,12 +302,12 @@ public sealed class MainForm : Form
     private void UpdateBrowserControls()
     {
         if (_closing || IsDisposed) return;
-        var busy = _sessionCheckInProgress || _loginInProgress || _otpSubmitting || _searchInProgress;
+        var busy = _sessionCheckInProgress || _loginInProgress || _otpSubmitting || _searchInProgress || _paymentInProgress;
         _btnStartLogin.Enabled = _browserReady && !busy;
         _btnSearch.Enabled = _browserReady && !busy && (_browser.State is Yolcu360SessionState.Authenticated or Yolcu360SessionState.SearchFailed);
-        _location.Enabled = _pickup.Enabled = _return.Enabled = _fuel.Enabled = _transmission.Enabled = !_searchInProgress;
-        _btnSave.Enabled = !_searchInProgress && _criteria is not null && _binding.Count > 0;
-        _btnBook.Enabled = !_searchInProgress && _grid.CurrentRow?.DataBoundItem is CarOffer;
+        _location.Enabled = _pickup.Enabled = _return.Enabled = _fuel.Enabled = _transmission.Enabled = !_searchInProgress && !_paymentInProgress;
+        _btnSave.Enabled = !_searchInProgress && !_paymentInProgress && _criteria is not null && _binding.Count > 0;
+        _btnBook.Enabled = !_searchInProgress && !_paymentInProgress && _grid.CurrentRow?.DataBoundItem is CarOffer && _rentalPayments is not null;
         var enableOtpInput = !busy && _browser.State == Yolcu360SessionState.WaitingForOtp;
         var focusOtpInput = enableOtpInput && !txtOtp.Enabled;
         txtOtp.Enabled = enableOtpInput;
@@ -331,8 +341,10 @@ public sealed class MainForm : Form
                 FuelFilter = _fuel.SelectedItem?.ToString() ?? "Tümü",
                 TransmissionFilter = _transmission.SelectedItem?.ToString() ?? "Tümü"
             };
-            await _collections.SaveAsync(name, collectionCriteria, ((IEnumerable<CarOffer>)_binding.List).ToArray(), token);
+            var originalCars = ((IEnumerable<CarOffer>)_binding.List).ToArray();
+            var persisted = await _collections.SaveAsync(name, collectionCriteria, originalCars, token);
             if (_closing) return;
+            ApplySavedIds(originalCars, persisted.Cars);
             await RefreshHistoryAsync();
             if (!_closing) _status.Text = "Collection saved.";
         }
@@ -342,13 +354,9 @@ public sealed class MainForm : Form
 
     private async void BookClicked(object? sender, EventArgs e)
     {
-        if (_closing || _searchInProgress) return;
+        if (_closing || _searchInProgress || _paymentInProgress) return;
         if (_grid.CurrentRow?.DataBoundItem is not CarOffer car) { MessageBox.Show(this, "Select an offer first."); return; }
-        if (MessageBox.Show(this, $"Create a simulated booking for {car.Model}, {car.Price:N2} {car.Currency}?", "Simulation only", MessageBoxButtons.YesNo) != DialogResult.Yes) return;
-        var booking = await _bookings.CreateSimulatedBookingAsync(car);
-        var payment = await _bookings.PayAsync(booking);
-        _status.Text = $"Simulation only: booking #{booking.Id}; payment {payment.Status}. No real booking or payment was made.";
-        MessageBox.Show(this, _status.Text, "Simulation");
+        await RunRentalPaymentAsync(car);
     }
 
     private async Task RefreshHistoryAsync()
@@ -379,6 +387,7 @@ public sealed class MainForm : Form
         _fuel.SelectedItem = _fuel.Items.Contains(collection.Criteria.FuelFilter) ? collection.Criteria.FuelFilter : "Tümü";
         _transmission.SelectedItem = _transmission.Items.Contains(collection.Criteria.TransmissionFilter) ? collection.Criteria.TransmissionFilter : "Tümü";
         ApplyFilters();
+        _tabs.SelectedIndex = 0;
     }
     private async void DeleteSelected(object? sender, EventArgs e)
     {

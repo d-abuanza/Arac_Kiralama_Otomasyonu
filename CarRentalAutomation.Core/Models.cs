@@ -16,6 +16,7 @@ public sealed record SearchCriteria(string PickupLocation, DateTime PickupAt, Da
 public sealed record CarOffer(string Model, string RentalCompany, string Transmission, string FuelType,
     decimal Price, string Currency, string? SourceUrl, bool IsMockData = false)
 {
+    public long Id { get; init; }
     public DateTime? ScrapedAt { get; init; }
 }
 
