@@ -1,0 +1,5 @@
+**/bin/
+**/obj/
+CarRentalAutomation.WinForms/appsettings.json
+*.user
+*.suo

@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="CarRentalAutomation.Core/CarRentalAutomation.Core.csproj" />
+  <Project Path="CarRentalAutomation.Infrastructure/CarRentalAutomation.Infrastructure.csproj" />
+  <Project Path="CarRentalAutomation.WinForms/CarRentalAutomation.WinForms.csproj" />
+</Solution>
