@@ -321,7 +321,7 @@ public sealed class MainForm : Form
     {
         if (_closing || _searchInProgress) return;
         if (_criteria is null || _binding.Count == 0) { MessageBox.Show(this, "Search for offers first."); return; }
-        var name = Microsoft.VisualBasic.Interaction.InputBox("Collection name:", "Save collection");
+        var name = Microsoft.VisualBasic.Interaction.InputBox("Collection name:", "Save collection", _criteria.PickupLocation);
         if (_closing || string.IsNullOrWhiteSpace(name)) return;
         var token = _lifetimeCancellation.Token;
         try

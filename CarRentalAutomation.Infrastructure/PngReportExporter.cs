@@ -28,15 +28,16 @@ public sealed class PngReportExporter : IPngReportExporter
         var xs = new[] { 32, 340, 610, 800, 970 };
         for (var i = 0; i < collection.Cars.Count; i++)
         {
-            var y = 164 + (i % 25) * 34 + (i / 25) * PageHeight;
-            if (i % 25 == 0)
+            var rowIndex = i % 25;
+            var rowY = 192 + rowIndex * 34 + (i / 25) * PageHeight;
+            if (rowIndex == 0)
             {
-                for (var h = 0; h < headers.Length; h++) graphics.DrawString(headers[h], headerFont, brush, xs[h], y);
-                y += 28;
+                var headerY = rowY - 28;
+                for (var h = 0; h < headers.Length; h++) graphics.DrawString(headers[h], headerFont, brush, xs[h], headerY);
             }
             var c = collection.Cars[i];
             var row = new[] { c.Model, c.RentalCompany, c.Transmission, c.FuelType, $"{c.Price:N2} {c.Currency}" };
-            for (var j = 0; j < row.Length; j++) graphics.DrawString(row[j], bodyFont, brush, xs[j], y + 28);
+            for (var j = 0; j < row.Length; j++) graphics.DrawString(row[j], bodyFont, brush, xs[j], rowY);
         }
         bitmap.Save(path, ImageFormat.Png);
     }
