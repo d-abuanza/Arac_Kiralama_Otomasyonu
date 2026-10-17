@@ -18,6 +18,12 @@ internal sealed class PaymentsPage : UserControl
     private int _offset;
     private int _count;
     private bool _busy;
+    private readonly ComboBox _paymentStatus = new() { Name = "cmbPaymentStatus", AccessibleName = "Ödeme durumu", DropDownStyle = ComboBoxStyle.DropDownList, Width = 230 };
+    private string _loadedStatus = "";
+    private sealed record StatusOption(string Value, string Label)
+    {
+        public override string ToString() => Label;
+    }
 
     public PaymentsPage(IRentalPaymentApi? api)
     {
@@ -34,7 +40,20 @@ internal sealed class PaymentsPage : UserControl
         AddColumn(nameof(PaymentRow.CreatedAt), "İşlem Tarihi", "dd.MM.yyyy HH:mm");
         AddColumn(nameof(PaymentRow.Reference), "İşlem Referansı");
         var toolbar = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(6) };
-        toolbar.Controls.AddRange([_refresh, _previous, _next]);
+        _paymentStatus.Items.AddRange(new object[] {
+            new StatusOption("", "Tümü"),
+            new StatusOption("Succeeded", "Başarılı"),
+            new StatusOption("Failed", "Başarısız"),
+            new StatusOption("Pending", "Ödeme bekleniyor"),
+            new StatusOption("Initializing", "Ödeme formu hazırlanıyor"),
+            new StatusOption("VerificationRequired", "Sonuç doğrulaması gerekiyor"),
+            new StatusOption("Cancelled", "İptal edildi"),
+            new StatusOption("Expired", "Süresi doldu"),
+            new StatusOption("Success", "Eski ödeme sonucu"),
+            new StatusOption("SimulatedSuccess", "Eski simülasyon sonucu") });
+        _paymentStatus.SelectedIndex = 0;
+        toolbar.Controls.AddRange([new Label { Text = "Ödeme durumu", AutoSize = true, Padding = new Padding(0, 7, 0, 0) }, _paymentStatus, _refresh, _previous, _next]);
+        _paymentStatus.SelectedIndexChanged += async (_, _) => { if (!_busy) await LoadAsync(0); };
         Controls.Add(_grid);
         Controls.Add(_status);
         _status.Dock = DockStyle.Bottom;
@@ -57,29 +76,41 @@ internal sealed class PaymentsPage : UserControl
         _busy = true;
         UpdateButtons();
         _status.Text = "Ödeme geçmişi yükleniyor…";
+        var filter = (StatusOption)_paymentStatus.SelectedItem!;
         try
         {
-            var records = await _api.HistoryAsync(offset, _lifetime.Token);
+            var records = await _api.HistoryAsync(offset, _lifetime.Token, filter.Value);
             if (IsDisposed || _lifetime.IsCancellationRequested) return;
             // The API scopes records to its authenticated user; no client-side user ID is sent.
             _grid.DataSource = records.Select(payment => new PaymentRow(payment)).ToList();
             _offset = offset;
             _count = records.Count;
+            _loadedStatus = filter.Value;
             _status.Text = records.Count == 0
-                ? (offset == 0 ? "Henüz kayıtlı ödeme bulunmuyor." : "Bu sayfada başka ödeme yok. Önceki sayfaya dönebilirsiniz.")
-                : $"{offset + 1}–{offset + records.Count} numaralı kayıtlar gösteriliyor. Her sayfada en fazla 100 ödeme.";
+                ? (offset == 0 ? $"{filter.Label}: Bu duruma uygun ödeme bulunmuyor." : "Bu sayfada başka ödeme yok. Önceki sayfaya dönebilirsiniz.")
+                : $"{filter.Label}: {offset + 1}–{offset + records.Count} arasındaki kayıtlar gösteriliyor. Her sayfada en fazla 100 ödeme.";
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
         catch (PaymentClientException exception)
         { if (!IsDisposed) _status.Text = "Ödemeler yüklenemedi: " + exception.Message + " Yenile ile tekrar deneyin."; }
         catch (Exception)
         { if (!IsDisposed) _status.Text = "Ödeme geçmişi yüklenemedi. API bağlantısını kontrol edip Yenile ile tekrar deneyin."; }
-        finally { _busy = false; if (!IsDisposed) UpdateButtons(); }
+        finally
+        {
+            if (!IsDisposed)
+            {
+                // Restore the filter matching the displayed rows if the request failed.
+                _paymentStatus.SelectedItem = _paymentStatus.Items.Cast<StatusOption>().First(x => x.Value == _loadedStatus);
+            }
+            _busy = false;
+            if (!IsDisposed) UpdateButtons();
+        }
     }
 
     private void UpdateButtons()
     {
         _refresh.Enabled = !_busy;
+        _paymentStatus.Enabled = !_busy;
         _previous.Enabled = !_busy && _offset > 0;
         _next.Enabled = !_busy && _count == 100 && _offset < 100000;
     }

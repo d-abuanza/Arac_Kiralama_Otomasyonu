@@ -215,6 +215,6 @@ internal static class Program
         public Task<RentalCheckout> ResumeAsync(long id, CancellationToken ct) => Task.FromResult(Payments.Values.Single(p => p.Payment.Id == id));
         public Task<RentalPayment> VerifyAsync(long id, CancellationToken ct) => GetAsync(id, ct);
         public Task<RentalPayment> CancelAsync(long id, CancellationToken ct) => GetAsync(id, ct);
-        public Task<IReadOnlyList<RentalPayment>> HistoryAsync(int offset, CancellationToken ct) => Task.FromResult<IReadOnlyList<RentalPayment>>(Payments.Values.Select(p => p.Payment).ToList());
+        public Task<IReadOnlyList<RentalPayment>> HistoryAsync(int offset, CancellationToken ct, string? status = null) => Task.FromResult<IReadOnlyList<RentalPayment>>(Payments.Values.Select(p => p.Payment).ToList());
     }
 }

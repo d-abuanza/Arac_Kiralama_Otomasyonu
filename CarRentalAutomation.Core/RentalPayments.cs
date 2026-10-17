@@ -24,7 +24,7 @@ public interface IRentalPaymentApi
     Task<RentalPayment> GetAsync(long paymentId, CancellationToken ct);
     Task<RentalPayment> VerifyAsync(long paymentId, CancellationToken ct);
     Task<RentalPayment> CancelAsync(long paymentId, CancellationToken ct);
-    Task<IReadOnlyList<RentalPayment>> HistoryAsync(int offset, CancellationToken ct);
+    Task<IReadOnlyList<RentalPayment>> HistoryAsync(int offset, CancellationToken ct, string? status = null);
 }
 public interface IRentalAttemptStore
 {

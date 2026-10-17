@@ -80,8 +80,8 @@ app.MapGet("/health", async (ServerConfiguration config, IPaymentRepository repo
 });
 
 var api = app.MapGroup("/api").RequireAuthorization();
-api.MapGet("/payments", async (HttpContext context, IPaymentRepository repository, int? offset, int? limit, CancellationToken ct) =>
-    Results.Ok(await repository.HistoryAsync(UserId(context), offset ?? 0, limit ?? 100, ct)));
+api.MapGet("/payments", async (HttpContext context, IPaymentRepository repository, int? offset, int? limit, string? status, CancellationToken ct) =>
+    Results.Ok(await repository.HistoryAsync(UserId(context), offset ?? 0, limit ?? 100, ct, status)));
 api.MapGet("/payments/{id:long}", async (long id, HttpContext context, IPaymentRepository repository, CancellationToken ct) =>
     Results.Ok((await repository.GetAsync(id, UserId(context), ct)).View));
 api.MapGet("/payments/{id:long}/checkout", async (long id, HttpContext context, PaymentWorkflow workflow, CancellationToken ct) =>

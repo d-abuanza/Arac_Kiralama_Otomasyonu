@@ -227,6 +227,6 @@ sealed class FakeRepository(PaymentRow row) : IPaymentRepository
     { if (!PaymentStatus.IsSuccess(Current.Status)) Current = Current with { Status = result.Status, ProviderReference = result.PaymentReference }; return Task.FromResult(Current); }
     public Task RequestCancelAsync(long id, long userId, CancellationToken ct) { Current = Current with { CancelRequested = true }; return Task.CompletedTask; }
     public Task<BookingRow> CreateBookingAsync(long userId, CreateBookingRequest request, CancellationToken ct) => throw new NotSupportedException();
-    public Task<IReadOnlyList<PaymentView>> HistoryAsync(long userId, int offset, int limit, CancellationToken ct) => throw new NotSupportedException();
+    public Task<IReadOnlyList<PaymentView>> HistoryAsync(long userId, int offset, int limit, CancellationToken ct, string? status = null) => throw new NotSupportedException();
     public Task<bool> CheckSchemaAsync(CancellationToken ct) => Task.FromResult(true);
 }

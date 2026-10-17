@@ -12,7 +12,7 @@ internal interface IPaymentRepository
     Task SaveCheckoutAsync(long paymentId, string protectedCheckout, string tokenHash, DateTime expiresAt, CancellationToken ct);
     Task<PaymentRow> ApplyAsync(long paymentId, ProviderResult result, CancellationToken ct);
     Task RequestCancelAsync(long paymentId, long userId, CancellationToken ct);
-    Task<IReadOnlyList<PaymentView>> HistoryAsync(long userId, int offset, int limit, CancellationToken ct);
+    Task<IReadOnlyList<PaymentView>> HistoryAsync(long userId, int offset, int limit, CancellationToken ct, string? status = null);
     Task<bool> CheckSchemaAsync(CancellationToken ct);
 }
 
@@ -209,12 +209,15 @@ internal sealed class MySqlPaymentRepository(ServerConfiguration configuration) 
         await command.ExecuteNonQueryAsync(ct);
     }
 
-    public async Task<IReadOnlyList<PaymentView>> HistoryAsync(long userId, int offset, int limit, CancellationToken ct)
+    public async Task<IReadOnlyList<PaymentView>> HistoryAsync(long userId, int offset, int limit, CancellationToken ct, string? status = null)
     {
+        status = string.IsNullOrWhiteSpace(status) ? null : status;
+        if (status is not null && status is not ("Initializing" or "Pending" or "Succeeded" or "Failed" or "Cancelled" or "Expired" or "VerificationRequired" or "Success" or "SimulatedSuccess"))
+            throw new PaymentApiException(400, "Geçersiz ödeme durumu seçildi.");
         await using var connection = await OpenAsync(ct);
         await using var command = Command(connection, null,
-            PaymentSelect + " WHERE b.UserId=@user ORDER BY p.CreatedAt DESC,p.Id DESC LIMIT @limit OFFSET @offset",
-            ("user", userId), ("limit", Math.Clamp(limit, 1, 100)), ("offset", Math.Clamp(offset, 0, 100000)));
+            PaymentSelect + " WHERE b.UserId=@user AND (@status IS NULL OR p.Status=@status) ORDER BY p.CreatedAt DESC,p.Id DESC LIMIT @limit OFFSET @offset",
+            ("user", userId), ("status", (object?)status ?? DBNull.Value), ("limit", Math.Clamp(limit, 1, 100)), ("offset", Math.Clamp(offset, 0, 100000)));
         await using var reader = await command.ExecuteReaderAsync(ct);
         var result = new List<PaymentView>();
         while (await reader.ReadAsync(ct)) result.Add(ReadPayment(reader).View);

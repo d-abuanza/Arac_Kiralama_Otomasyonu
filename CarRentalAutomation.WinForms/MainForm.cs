@@ -61,7 +61,7 @@ public sealed partial class MainForm : Form
         _browserHost.VerificationCancelled += CancelHumanVerification;
         _browser.StateChanged += BrowserStateChanged;
         _browser.HumanVerificationVisibilityChanged += HumanVerificationVisibilityChanged;
-        Text = "CarRentalAutomation | Open Yazilim";
+        Text = "CarRentalAutomation";
         Width = 1180; Height = 760; StartPosition = FormStartPosition.CenterScreen;
         _fuel.Items.AddRange(["Tümü", "Benzin", "Dizel", "Benzin/Dizel", "Hibrit", "Elektrik"]); _fuel.SelectedIndex = 0;
         _transmission.Items.AddRange(["Tümü", "Otomatik", "Manuel"]); _transmission.SelectedIndex = 0;

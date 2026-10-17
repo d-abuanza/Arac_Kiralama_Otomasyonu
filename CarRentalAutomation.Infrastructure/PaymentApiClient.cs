@@ -33,8 +33,14 @@ public sealed class PaymentApiClient : IRentalPaymentApi, IDisposable
     public Task<RentalPayment> GetAsync(long paymentId, CancellationToken ct) => SendAsync<RentalPayment>(HttpMethod.Get, $"api/payments/{paymentId}", null, ct);
     public Task<RentalPayment> VerifyAsync(long paymentId, CancellationToken ct) => SendAsync<RentalPayment>(HttpMethod.Post, $"api/payments/{paymentId}/verify", new { }, ct);
     public Task<RentalPayment> CancelAsync(long paymentId, CancellationToken ct) => SendAsync<RentalPayment>(HttpMethod.Post, $"api/payments/{paymentId}/cancel", new { }, ct);
-    public async Task<IReadOnlyList<RentalPayment>> HistoryAsync(int offset, CancellationToken ct) =>
-        await SendAsync<List<RentalPayment>>(HttpMethod.Get, $"api/payments?offset={Math.Max(0, offset)}&limit=100", null, ct);
+    public async Task<IReadOnlyList<RentalPayment>> HistoryAsync(int offset, CancellationToken ct, string? status = null)
+    {
+        var records = await SendAsync<List<RentalPayment>>(HttpMethod.Get,
+            $"api/payments?offset={Math.Max(0, offset)}&limit=100&status={Uri.EscapeDataString(status ?? "")}", null, ct);
+        if (!string.IsNullOrEmpty(status) && records.Any(payment => payment.Status != status))
+            throw new PaymentClientException("Ödeme sunucusu seçilen durum filtresini uygulamadı. Ödeme hizmetini güncel sürümle yeniden başlatıp Yenile düğmesine basın.");
+        return records;
+    }
 
     private async Task<T> SendAsync<T>(HttpMethod method, string path, object? body, CancellationToken ct)
     {
