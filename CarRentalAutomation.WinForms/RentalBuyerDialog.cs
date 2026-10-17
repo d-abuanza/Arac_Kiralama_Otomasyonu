@@ -53,7 +53,7 @@ internal sealed class RentalBuyerDialog : Form
     internal void FillSyntheticBuyer()
     {
         // Explicitly selected Sandbox fixture, never a substitute for database site-login credentials.
-        var values = new[] { "Sandbox", "Test", "11111111111", "sandbox@example.test", "+905555555555", "Sandbox test adresi No:1", "Istanbul", "Turkey", "34000" };
+        var values = new[] { "Sandbox", "Test", "11111111111", "sandbox@example.com", "+905555555555", "Sandbox test adresi No:1", "Istanbul", "Turkey", "34000" };
         for (var i = 0; i < values.Length; i++) _fields[i].Text = values[i];
     }
     private void Submit()

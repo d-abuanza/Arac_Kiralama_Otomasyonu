@@ -38,7 +38,17 @@ internal sealed class IyzicoCheckoutProvider(HttpClient client, ServerConfigurat
         using var document = await PostAsync(InitializePath, body, cancellationToken);
         var root = document.RootElement;
         if (Text(root, "status") == "failure")
-            throw new ProviderRejectedException("iyzico ödeme formunu başlatamadı. Hata kodu: " + SafeError(root));
+        {
+            var code = SafeError(root);
+            var explanation = code switch
+            {
+                "3" => " Alıcı e-posta adresi gerekli.",
+                "4" => " Alıcı e-posta adresi en fazla 100 karakter olmalıdır.",
+                "5" => " iyzico alıcı e-posta adresinin biçimini kabul etmedi. E-posta alanını düzeltip aynı rezervasyon için tekrar deneyin.",
+                _ => ""
+            };
+            throw new ProviderRejectedException("iyzico ödeme formunu başlatamadı. Hata kodu: " + code + "." + explanation);
+        }
         var token = Text(root, "token");
         var url = Text(root, "paymentPageUrl");
         if (Text(root, "status") != "success" || Text(root, "conversationId") != payment.ConversationId ||
