@@ -50,6 +50,10 @@ using (var request = JsonDocument.Parse(script[prefix.Length..^1]))
     var json = request.RootElement;
     if (json.GetProperty("action").GetString() != "extract"
         || json.GetProperty("location").GetString() != hostileLocation
+        || json.GetProperty("locationQuery").GetString() != hostileLocation
+        || json.GetProperty("locationNames").GetArrayLength() != 1
+        || json.GetProperty("locationNames")[0].GetString() != hostileLocation
+        || json.GetProperty("locationCity").ValueKind != JsonValueKind.Null
         || json.GetProperty("operationId").GetString() != hostileOperation
         || json.GetProperty("pickupDate").GetString() != "2030-12-05"
         || json.GetProperty("returnDate").GetString() != "2030-12-08"
@@ -58,6 +62,25 @@ using (var request = JsonDocument.Parse(script[prefix.Length..^1]))
         throw new InvalidOperationException("Search request serialization changed values or local dates/times.");
     checks++;
 }
+foreach (var location in PickupLocations.Options)
+{
+    var mappedCriteria = criteria with { PickupLocation = location.DisplayName };
+    var mappedScript = (string?)create.Invoke(null, ["location-type", mappedCriteria, "mapped-search"])
+        ?? throw new InvalidOperationException("Mapped pickup script is missing.");
+    using var request = JsonDocument.Parse(mappedScript[prefix.Length..^1]);
+    var json = request.RootElement;
+    if (json.GetProperty("location").GetString() != location.DisplayName
+        || json.GetProperty("locationQuery").GetString() != location.SearchText
+        || json.GetProperty("locationCity").GetString() != location.City
+        || !json.GetProperty("locationNames").EnumerateArray().Select(x => x.GetString()).SequenceEqual(location.WebsiteNames))
+        throw new InvalidOperationException("A dropdown pickup changed its persisted label or website mapping.");
+    checks++;
+}
+if (PickupLocations.Find("Ankara - Ankara Esenboğa Havalimanı")?.WebsiteNames.Contains("Esenboğa Havalimanı") is not true
+    || PickupLocations.Find("İzmir - İzmir Adnan Menderes Havalimanı")?.WebsiteNames.Contains("Adnan Menderes Havalimanı") is not true
+    || PickupLocations.Find("Previously saved arbitrary location") is not null)
+    throw new InvalidOperationException("Verified website aliases or saved legacy pickup compatibility changed.");
+checks++;
 // Parse and run the exact generated expression. A foreign origin must return before touching the DOM.
 // The deliberately hostile data must remain inert inside JSON, including newlines and script delimiters.
 using (var node = Process.Start(new ProcessStartInfo("node")

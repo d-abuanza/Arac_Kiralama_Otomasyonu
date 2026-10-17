@@ -38,6 +38,8 @@ function fixture(url = 'https://yolcu360.com/arac-kiralama/search') {
         getBoundingClientRect() { return this.rect; }
         scrollIntoView() { document.hit = this; }
         click() { this.clicks++; }
+        focus() { this.focused = true; }
+        dispatchEvent(event) { (this.events ||= []).push(event); return true; }
     }
     function matches(e, selector) {
         const attrs = [...selector.matchAll(/\[([^\]=*^]+)([\^*]?=)?(?:(?:"([^"]*)")|(?:'([^']*)')|([^\]]*))?\]/g)];
@@ -61,7 +63,11 @@ function fixture(url = 'https://yolcu360.com/arac-kiralama/search') {
     document = { body, readyState: 'complete', hit: null, overlay: null,
         querySelector: selector => body.querySelector(selector), querySelectorAll: selector => body.querySelectorAll(selector),
         elementFromPoint: () => document.overlay || document.hit };
-    const context = vm.createContext({ document, location, window: {}, URL, Node: { TEXT_NODE: 3 }, getComputedStyle: e => e.style });
+    const inputPrototype = {};
+    Object.defineProperty(inputPrototype, 'value', { set(value) { this.value = value; } });
+    const context = vm.createContext({ document, location, window: {}, URL, Node: { TEXT_NODE: 3 },
+        HTMLInputElement: { prototype: inputPrototype }, InputEvent: class { constructor(type, options) { this.type = type; Object.assign(this, options); } },
+        getComputedStyle: e => e.style });
     const controller = vm.runInContext(source, context, { filename: 'Yolcu360SearchPage.js' });
     const request = { location: 'Airport Test', pickupDate: '2030-12-05', returnDate: '2030-12-08', pickupTime: '09:30', returnTime: '17:00', operationId: 'operation-1' };
     return { make, body, document, context, run: (action, extra = {}) => controller({ ...request, action, ...extra }) };
@@ -84,7 +90,18 @@ function form(f) {
     for (const [label, value] of [['Alış Saati', '09:30'], ['Bırakış Saati', '17:00']])
         root.append(f.make('div').append(f.make('span', {}, label), f.make('span', { class: 'cursor-pointer' }, value)));
     root.append(f.make('span', { 'data-cms-key': 'pickup_date' }, '5 Ara, Per'), f.make('span', { 'data-cms-key': 'pickup_date' }, '8 Ara, Paz'));
+    f.context.window.__carRentalPickupSelection = { operationId: 'operation-1', location: 'Airport Test', pageName: 'airport test' };
     f.body.append(root); return { root, search, loc };
+}
+function locationLayer(f, names) {
+    const layer = f.make('div', { id: 'location-layer', 'data-field': 'pickup' });
+    const input = f.make('input', { role: 'combobox' });
+    const options = names.map(({ name, city = 'İstanbul, Türkiye', disabled = false, history = false, hidden = false }) => {
+        const option = f.make('button', { role: 'option', class: 'location-layer__row ' + (history ? 'location-layer__row--history' : 'location-layer__row--result') });
+        option.append(f.make('span', {}, '').append(f.make('span', { class: 'location-layer__row-title' }, name), f.make('span', {}, city)));
+        option.disabled = disabled; if (hidden) option.style.display = 'none'; return option;
+    });
+    layer.append(input, ...options); f.body.append(layer); return { layer, input, options };
 }
 function calendar(f, { endpoints = ['2030-12-05'], hasReturn = false } = {}) {
     const overlay = f.make('div', { class: 'modal-overlay' });
@@ -156,6 +173,71 @@ test('invalid form and disabled or covered search button never submit', () => {
 test('a verified form submits once per operation even if submit is requested again', () => {
     const f = fixture('https://yolcu360.com/'); const { search } = form(f);
     assert.equal(f.run('submit').state, 'submitted'); assert.equal(f.run('submit').state, 'already-submitted'); assert.equal(search.clicks, 1);
+});
+test('matching text without a selected website suggestion cannot satisfy the form', () => {
+    const f = fixture('https://yolcu360.com/'); const { search } = form(f);
+    delete f.context.window.__carRentalPickupSelection;
+    assert.equal(f.run('form-check').state, 'incomplete');
+    assert.equal(f.run('submit').state, 'incomplete'); assert.equal(search.clicks, 0);
+});
+const mappedLocations = [
+    { location: 'İstanbul - Sabiha Gökçen Havalimanı', locationQuery: 'Sabiha Gökçen Havalimanı', locationNames: ['Sabiha Gökçen Havalimanı'], locationCity: 'İstanbul', pageName: 'Sabiha Gökçen Havalimanı' },
+    { location: 'Ankara - Ankara Esenboğa Havalimanı', locationQuery: 'Ankara Esenboğa Havalimanı', locationNames: ['Ankara Esenboğa Havalimanı', 'Esenboğa Havalimanı'], locationCity: 'Ankara', pageName: 'Esenboğa Havalimanı' },
+    { location: 'İzmir - İzmir Adnan Menderes Havalimanı', locationQuery: 'İzmir Adnan Menderes Havalimanı', locationNames: ['İzmir Adnan Menderes Havalimanı', 'Adnan Menderes Havalimanı'], locationCity: 'İzmir', pageName: 'Adnan Menderes Havalimanı' },
+    { location: 'İstanbul - İstanbul Havalimanı', locationQuery: 'İstanbul Havalimanı', locationNames: ['İstanbul Havalimanı'], locationCity: 'İstanbul', pageName: 'İstanbul Havalimanı' },
+    { location: 'İstanbul - Kadıköy', locationQuery: 'Kadıköy', locationNames: ['Kadıköy'], locationCity: 'İstanbul', pageName: 'Kadıköy' },
+    { location: 'İstanbul - Yenibosna', locationQuery: 'Yenibosna', locationNames: ['Yenibosna'], locationCity: 'İstanbul', pageName: 'Yenibosna' },
+    { location: 'İzmir - Alsancak', locationQuery: 'Alsancak', locationNames: ['Alsancak'], locationCity: 'İzmir', pageName: 'Alsancak' }
+];
+for (const mapped of mappedLocations) test(`mapped pickup selects the exact city/name and verifies the rendered value: ${mapped.location}`, () => {
+    const f = fixture('https://yolcu360.com/'); const { loc } = form(f);
+    const { layer, input, options } = locationLayer(f, [
+        { name: mapped.pageName + ' AVM', city: mapped.locationCity + ', Türkiye' },
+        { name: mapped.pageName, city: mapped.locationCity + ', Türkiye' }
+    ]);
+    assert.equal(f.run('location-type', mapped).state, 'location-typed');
+    assert.equal(input.value, mapped.locationQuery);
+    assert.equal(input.events[0].type, 'input'); assert.equal(input.events[0].bubbles, true);
+    assert.equal(f.run('location-select', mapped).state, 'location-clicked');
+    assert.equal(options[0].clicks, 0); assert.equal(options[1].clicks, 1);
+    assert.equal(f.run('location-check', mapped).state, 'location-pending');
+    loc.value = mapped.pageName; layer.style.display = 'none';
+    assert.equal(f.run('location-check', mapped).state, 'location-selected');
+    assert.equal(f.run('form-check', mapped).state, 'ready');
+    assert.equal(f.run('location-check', { ...mapped, operationId: 'another-operation' }).state, 'location-pending');
+});
+test('same place name in a different city, history rows, hidden rows and disabled rows are never chosen', () => {
+    const f = fixture('https://yolcu360.com/'); form(f);
+    const mapped = mappedLocations.at(-1);
+    const { options } = locationLayer(f, [
+        { name: 'Alsancak', city: 'Lefkoşa, Kıbrıs' },
+        { name: 'Alsancak', city: 'İzmir, Türkiye', history: true },
+        { name: 'Alsancak', city: 'İzmir, Türkiye', disabled: true },
+        { name: 'Alsancak', city: 'İzmir, Türkiye', hidden: true }
+    ]);
+    assert.equal(f.run('location-select', mapped).state, 'location-option-pending');
+    assert.equal(options.reduce((sum, e) => sum + e.clicks, 0), 0);
+});
+test('duplicate exact suggestions stop rather than choose the first, and overlays prevent clicks', () => {
+    const mapped = mappedLocations[4];
+    const f = fixture('https://yolcu360.com/'); form(f);
+    const { options } = locationLayer(f, [{ name: 'Kadıköy' }, { name: 'Kadıköy' }]);
+    assert.equal(f.run('location-select', mapped).state, 'location-ambiguous');
+    assert.equal(options[0].clicks + options[1].clicks, 0);
+    options[1].disabled = true; f.document.overlay = f.make('div');
+    assert.equal(f.run('location-select', mapped).state, 'location-option-pending'); assert.equal(options[0].clicks, 0);
+});
+test('selection errors and a changed final input prevent submitting even after a valid click', () => {
+    const mapped = mappedLocations[3];
+    const f = fixture('https://yolcu360.com/'); const { root, loc, search } = form(f);
+    const { layer } = locationLayer(f, [{ name: mapped.pageName }]);
+    assert.equal(f.run('location-select', mapped).state, 'location-clicked');
+    layer.style.display = 'none'; loc.value = 'Sabiha Gökçen Havalimanı';
+    assert.equal(f.run('submit', mapped).state, 'incomplete'); assert.equal(search.clicks, 0);
+    loc.value = mapped.pageName;
+    const error = f.make('div', { 'data-cms-key': 'location_layer_selection_error' }, 'Selection failed'); root.append(error);
+    assert.equal(f.run('submit', mapped).state, 'incomplete'); assert.equal(search.clicks, 0);
+    error.style.display = 'none'; assert.equal(f.run('form-check', mapped).state, 'ready');
 });
 test('a lone selected pickup endpoint without a return header completes pickup without clicking again', () => {
     const f = fixture('https://yolcu360.com/'); const { days } = calendar(f);

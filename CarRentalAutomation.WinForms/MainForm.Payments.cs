@@ -24,7 +24,7 @@ public sealed partial class MainForm
     {
         if (_payments is null || _rentalPayments is null) return;
         if (car.IsMockData) { MessageBox.Show(this, "Demo araçlar ödenemez. Canlı veya kayıtlı gerçek teklif seçin.", "Sandbox"); return; }
-        if (_criteria is not null && (!string.Equals(_location.Text.Trim(), _criteria.PickupLocation, StringComparison.OrdinalIgnoreCase) ||
+        if (_criteria is not null && (!string.Equals(_location.SelectedLocation, _criteria.PickupLocation, StringComparison.Ordinal) ||
             _pickup.Value != _criteria.PickupAt || _return.Value != _criteria.ReturnAt))
         { MessageBox.Show(this, "Alış yeri veya tarihler değişti. Bu bilgilerle önce yeni arama yapın; seçili teklif eski aramaya aittir.", "Teklif bilgileri"); return; }
         _paymentInProgress = true;

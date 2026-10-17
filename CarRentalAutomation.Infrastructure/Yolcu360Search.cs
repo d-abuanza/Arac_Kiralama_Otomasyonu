@@ -130,14 +130,14 @@ public sealed partial class Yolcu360Browser
             if (state is "location-ambiguous" or "date-outside-calendar" or "date-unavailable")
                 throw new InvalidOperationException(state switch
                 {
-                    "location-ambiguous" => "Birden fazla konum eşleşti. Daha açık bir alış konumu yazın.",
+                    "location-ambiguous" => "Sitede seçilen ad ve şehir için birden fazla konum eşleşti. Yanlış konum seçilmemesi için arama gönderilmedi.",
                     "date-outside-calendar" => "Seçilen tarih sitenin takvim aralığının dışında.",
                     _ => "Seçilen tarih sitede kullanılamıyor."
                 });
             await Task.Delay(200, token);
         }
         if (action == "session") throw new SearchLoginRequiredException();
-        if (action == "location-select") throw new InvalidOperationException("Alış konumu sitedeki seçeneklerle eşleşmedi. Tam havalimanı, şehir veya lokasyon adını yazın.");
+        if (action == "location-select") throw new InvalidOperationException($"Seçilen alış konumu sitedeki aynı ad ve şehirle eşleşmedi: {criteria.PickupLocation}. Arama gönderilmedi.");
         throw new InvalidOperationException($"Sitenin arama alanı hazır olmadı ({action}: {state}). Arama gönderilmedi.");
     }
 

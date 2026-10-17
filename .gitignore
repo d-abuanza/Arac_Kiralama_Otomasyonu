@@ -1,8 +1,10 @@
 **/bin/
 **/obj/
 CarRentalAutomation.WinForms/appsettings.json
+appsettings.example.json
 *.user
 *.suo
+artifacts/
 # Local payment credentials must stay outside source control.
 **/secrets.json
 .env

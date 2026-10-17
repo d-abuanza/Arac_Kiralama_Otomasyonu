@@ -40,6 +40,33 @@ internal static class Program
 
     private static void CheckUi()
     {
+        using var pickup = new PickupLocationSelector();
+        var expectedLocations = new[]
+        {
+            "İstanbul - Sabiha Gökçen Havalimanı", "Ankara - Ankara Esenboğa Havalimanı",
+            "İzmir - İzmir Adnan Menderes Havalimanı", "İstanbul - İstanbul Havalimanı",
+            "İstanbul - Kadıköy", "İstanbul - Yenibosna", "İzmir - Alsancak"
+        };
+        Check(pickup.DropDownStyle == ComboBoxStyle.DropDownList && pickup.Items.Cast<string>().SequenceEqual(expectedLocations), "seven exact Turkish pickup choices in order");
+        Check(pickup.RequireSelection() == "İstanbul - İstanbul Havalimanı", "existing Istanbul Airport default retained as dropdown choice");
+        foreach (var location in expectedLocations)
+        {
+            pickup.SelectedItem = location;
+            Check(pickup.RequireSelection() == location, "selected pickup text read without normalization");
+            var criteria = new SearchCriteria(pickup.RequireSelection(), DateTime.Now.AddDays(7), DateTime.Now.AddDays(10));
+            var savedCollection = new SavedCollection(1, location, criteria, DateTime.Now, []);
+            Check(savedCollection.Criteria.PickupLocation == location, "collection snapshot retains selected location");
+        }
+        pickup.SelectedIndex = -1;
+        try { pickup.RequireSelection(); Check(false, "missing pickup accepted"); }
+        catch (ArgumentException exception) { Check(exception.Message.Contains("Alış yeri"), "missing pickup gives useful validation"); }
+        pickup.RestoreSavedLocation("Istanbul Airport");
+        Check(pickup.RequireSelection() == "Istanbul Airport", "legacy saved pickup retains original spelling");
+        pickup.RestoreSavedLocation("Antalya - Eski kayıt");
+        pickup.RestoreSavedLocation("Antalya - Eski kayıt");
+        Check(pickup.RequireSelection() == "Antalya - Eski kayıt" && pickup.Items.Count == 9, "legacy off-list location restored without duplicate items");
+        pickup.RestoreSavedLocation("");
+        Check(pickup.SelectedIndex == -1, "empty saved location does not select an unrelated default");
         using var paymentsPage = new PaymentsPage(new FakeApi());
         var paymentGrid = Descendants(paymentsPage).OfType<DataGridView>().Single();
         Check(paymentGrid.Columns.Count == 10 && !paymentGrid.AutoGenerateColumns && paymentGrid.ReadOnly, "payment history exposes only ten explicit read-only columns");

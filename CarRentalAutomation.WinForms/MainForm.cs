@@ -1,6 +1,5 @@
 using CarRentalAutomation.Core;
 using CarRentalAutomation.Infrastructure;
-using System.Text.RegularExpressions;
 
 namespace CarRentalAutomation.WinForms;
 
@@ -13,7 +12,7 @@ public sealed partial class MainForm : Form
     private readonly Yolcu360Browser _browser = new();
     private readonly BackgroundBrowserHost _browserHost;
     private readonly long _userId;
-    private readonly TextBox _location = new() { Name = "txtPickupLocation", AccessibleName = "Alış yeri", Text = "Istanbul Airport", Width = 190 };
+    private readonly PickupLocationSelector _location = new();
     private readonly DateTimePicker _pickup = new() { Name = "dtpPickup", AccessibleName = "Alış tarihi ve saati", Format = DateTimePickerFormat.Custom, CustomFormat = "dd.MM.yyyy HH:mm", Width = 150, Value = DateTime.Now.AddDays(7) };
     private readonly DateTimePicker _return = new() { Name = "dtpReturn", AccessibleName = "Dönüş tarihi ve saati", Format = DateTimePickerFormat.Custom, CustomFormat = "dd.MM.yyyy HH:mm", Width = 150, Value = DateTime.Now.AddDays(10) };
     private readonly ComboBox _fuel = new() { Name = "cmbFuel", AccessibleName = "Yakıt filtresi", DropDownStyle = ComboBoxStyle.DropDownList, Width = 120 };
@@ -95,7 +94,7 @@ public sealed partial class MainForm : Form
         var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 4, ColumnCount = 1 };
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize)); root.RowStyles.Add(new RowStyle(SizeType.AutoSize)); root.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         var searchPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(8), WrapContents = true };
-        searchPanel.Controls.AddRange([new Label { Text = "Alis yeri", AutoSize = true, Padding = new Padding(0, 8, 0, 0) }, _location,
+        searchPanel.Controls.AddRange([new Label { Text = "Alış yeri", AutoSize = true, Padding = new Padding(0, 8, 0, 0) }, _location,
             new Label { Text = "Alis", AutoSize = true, Padding = new Padding(8, 8, 0, 0) }, _pickup,
             new Label { Text = "Donus", AutoSize = true, Padding = new Padding(8, 8, 0, 0) }, _return,
             new Label { Text = "Yakit", AutoSize = true, Padding = new Padding(8, 8, 0, 0) }, _fuel,
@@ -255,12 +254,11 @@ public sealed partial class MainForm : Form
         try
         {
             // Validate before clearing the current result set or changing any displayed dates.
-            var input = new SearchCriteria(Regex.Replace(_location.Text, @"\s+", " ").Trim(), _pickup.Value, _return.Value);
+            var input = new SearchCriteria(_location.RequireSelection(), _pickup.Value, _return.Value);
             input.Validate();
             var criteria = new SearchCriteria(input.PickupLocation, RoundUpToHalfHour(input.PickupAt), RoundUpToHalfHour(input.ReturnAt));
             criteria.Validate();
             var adjustedTimes = criteria.PickupAt != input.PickupAt || criteria.ReturnAt != input.ReturnAt;
-            _location.Text = criteria.PickupLocation;
             _pickup.Value = criteria.PickupAt;
             _return.Value = criteria.ReturnAt;
             _criteria = criteria;
@@ -383,7 +381,7 @@ public sealed partial class MainForm : Form
         _criteria = collection.Criteria; _offers = collection.Cars.ToList();
         _hasResultSet = true;
         _resultContext = $"'{collection.Name}' koleksiyonu yüklendi. Fiyatlar kaydedilmiş anlık görüntülerdir.";
-        _location.Text = collection.Criteria.PickupLocation; _pickup.Value = collection.Criteria.PickupAt; _return.Value = collection.Criteria.ReturnAt;
+        _location.RestoreSavedLocation(collection.Criteria.PickupLocation); _pickup.Value = collection.Criteria.PickupAt; _return.Value = collection.Criteria.ReturnAt;
         _fuel.SelectedItem = _fuel.Items.Contains(collection.Criteria.FuelFilter) ? collection.Criteria.FuelFilter : "Tümü";
         _transmission.SelectedItem = _transmission.Items.Contains(collection.Criteria.TransmissionFilter) ? collection.Criteria.TransmissionFilter : "Tümü";
         ApplyFilters();

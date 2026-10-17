@@ -29,7 +29,15 @@
     const calendarEndpoints = () => [...(calendar?.querySelectorAll('td.endpoint[data-day]') || [])].map(e=>e.getAttribute('data-day'));
     const hasReturnDate = () => !!calendar?.querySelector('[data-cms-key="date_picker_dropoff_date"]');
     const wanted = norm(request.location);
-    const locationMatches = () => !!wanted && norm(loc?.value) === wanted && !visible(layer);
+    const acceptedNames = (request.locationNames || [request.location]).map(norm).filter(Boolean);
+    const wantedCity = norm(request.locationCity);
+    const cityMatches = value => !wantedCity || String(value || '').split(/[\r\n,/()\-]+/).map(norm).includes(wantedCity);
+    const selection = () => window.__carRentalPickupSelection;
+    // Text assignment alone is insufficient: remember the exact normal suggestion click for this search.
+    const locationMatches = () => !!wanted && selection()?.operationId === request.operationId
+        && selection().location === request.location && norm(loc?.value) === selection().pageName
+        && acceptedNames.includes(norm(loc?.value)) && !visible(layer)
+        && !visible(root?.querySelector('[data-cms-key="location_layer_selection_error"]'));
     const dates = [...(root?.querySelectorAll('[data-cms-key="pickup_date"]') || [])];
     const times = [...(root?.querySelectorAll('span') || [])].filter(e => !e.children.length && /^(Alış|Bırakış) Saati$/.test(text(e)));
     const timeValue = i => times[i]?.parentElement?.querySelector('.cursor-pointer');
@@ -51,22 +59,31 @@
         case 'form-ready': return { state: visible(loc) && usable(root?.querySelector('#search')) && dates.length === 2 && times.length === 2 ? 'ready' : 'form-pending' };
         case 'location-open':
             if (visible(layer)) return {state:'location-open'};
+            delete window.__carRentalPickupSelection;
             return { state: click(root?.querySelector('#inputPickUpLocation-label')) ? 'location-opening' : 'location-control-missing' };
         case 'location-type': {
             const input = layer?.querySelector('input[role="combobox"]');
             if (!interact(input) || input.readOnly) return { state: 'location-control-missing' };
+            delete window.__carRentalPickupSelection;
+            const query = request.locationQuery || request.location;
             input.focus();
-            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,request.location);
-            input.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:request.location}));
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,query);
+            input.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:query}));
             return { state: 'location-typed' };
         }
         case 'location-select': {
             if (locationMatches()) return { state: 'location-selected' };
             const options = [...(layer?.querySelectorAll('[role="option"]') || [])].filter(e => usable(e) && !e.classList.contains('location-layer__row--history'));
-            const exact = options.filter(e => norm((e.innerText || '').split('\n')[0]) === wanted);
+            // The published SearchLocationLayer renders the canonical place name above a city subtitle.
+            // Search rows have row-title; popular rows use the first/last spans in their flex-col wrapper.
+            const placeName = e => text(e.querySelector('.location-layer__row-title')) || (e.innerText || '').split('\n')[0].trim();
+            const exact = options.filter(e => acceptedNames.includes(norm(placeName(e))) && cityMatches(e.innerText || ''));
             if (exact.length > 1) return { state: 'location-ambiguous' };
             if (!exact.length) return { state: 'location-option-pending' };
-            return { state: click(exact[0]) ? 'location-clicked' : 'location-option-pending' };
+            const pageName = norm(placeName(exact[0]));
+            if (!click(exact[0])) return { state: 'location-option-pending' };
+            window.__carRentalPickupSelection = { operationId:request.operationId, location:request.location, pageName };
+            return { state: 'location-clicked' };
         }
         case 'location-check': return { state: locationMatches() ? 'location-selected' : 'location-pending' };
         case 'calendar-open':
