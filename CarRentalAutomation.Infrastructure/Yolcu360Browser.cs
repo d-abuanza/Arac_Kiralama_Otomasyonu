@@ -22,8 +22,16 @@ public sealed partial class Yolcu360Browser : IDisposable
     public Yolcu360SessionState State { get; private set; } = Yolcu360SessionState.Initializing;
     public event Action<BrowserOperationResult>? StateChanged;
 
-    public async Task InitializeAsync(CancellationToken cancellationToken = default)
+    public Task InitializeAsync(CancellationToken cancellationToken = default)
     {
+        ObjectDisposedException.ThrowIf(_disposed || _shutdownRequested, this);
+        _initializationTask ??= InitializeCoreAsync(_lifetimeCancellation.Token);
+        return _initializationTask.WaitAsync(cancellationToken);
+    }
+
+    private async Task InitializeCoreAsync(CancellationToken cancellationToken)
+    {
+        SetState(Yolcu360SessionState.Initializing, "Yolcu360 arka plan tarayıcısı hazırlanıyor...");
         var userData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "OpenYazilim", "CarRentalAutomation", "WebView2");
         Directory.CreateDirectory(userData);
         var environment = await CoreWebView2Environment.CreateAsync(userDataFolder: userData);
@@ -43,44 +51,77 @@ public sealed partial class Yolcu360Browser : IDisposable
             if (e.Request.Method == "POST" && Uri.TryCreate(e.Request.Uri, UriKind.Absolute, out var searchUri)
                 && searchUri.Host is "yolcu360.com" or "www.yolcu360.com" or "api2.yolcu360.com"
                 && searchUri.AbsolutePath == "/api/v1/search-api/search/point/")
+            {
                 _searchResponseStatus = e.Response.StatusCode;
+                if (e.Response.StatusCode == 401) { _serverRejectedSession = true; _lastValidatedSessionUtc = null; }
+            }
+            if (e.Request.Method == "GET" && Uri.TryCreate(e.Request.Uri, UriKind.Absolute, out var accountUri)
+                && accountUri.Host is "yolcu360.com" or "www.yolcu360.com" or "api2.yolcu360.com"
+                && Regex.IsMatch(accountUri.AbsolutePath, @"^/api/v1/payment-api/wallets/[^/]+/history/$"))
+            {
+                _sessionProbeStatus = e.Response.StatusCode;
+                if (e.Response.StatusCode == 401) { _serverRejectedSession = true; _lastValidatedSessionUtc = null; }
+            }
         };
-        await NavigateAsync(LoginUrl, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
     }
 
-    public async Task<BrowserOperationResult> AuthenticateAsync(string phoneNumber, CancellationToken cancellationToken = default)
+    public Task<BrowserOperationResult> AuthenticateAsync(string phoneNumber, CancellationToken cancellationToken = default) =>
+        AuthenticateAsync(_ => Task.FromResult<string?>(phoneNumber), cancellationToken);
+
+    public async Task<BrowserOperationResult> AuthenticateAsync(Func<CancellationToken, Task<string?>> phoneProvider, CancellationToken cancellationToken = default)
     {
-        await _operationLock.WaitAsync(cancellationToken);
+        if (_shutdownRequested) return new BrowserOperationResult(State, "Uygulama kapatılıyor.");
+        if (!await _operationLock.WaitAsync(0, cancellationToken)) return new BrowserOperationResult(State, "Bir tarayıcı işlemi devam ediyor.");
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetimeCancellation.Token);
+        var token = linked.Token;
         try
         {
-            var nationalPhone = NormalizeTurkishPhoneNumber(phoneNumber);
-            SetState(Yolcu360SessionState.LoadingLoginPage, "Yolcu360 giriş sayfası açılıyor...");
-            await NavigateAsync(LoginUrl, cancellationToken);
-            SetState(Yolcu360SessionState.WaitingForPhoneField, "Telefon formunun hazır olması bekleniyor...");
-            var ready = await WaitForLoginStageAsync("ready", s => s is "phone" or "otp" or "authenticated", PageTimeout, cancellationToken);
-            if (ready.State == "authenticated") return SetState(Yolcu360SessionState.Authenticated, "Yolcu360 hesabının açık olduğu doğrulandı.", true);
+            await InitializeAsync(token);
+            await EnsureSitePageAsync(token);
+            SetState(Yolcu360SessionState.CheckingSession, "Yolcu360 oturumu kontrol ediliyor...");
+            var current = await ReadSettledSessionAsync(token);
+            if (current.State == "authenticated")
+            {
+                var existing = await ValidateAuthenticatedSessionAsync(token);
+                if (existing.Succeeded || !_serverRejectedSession) return existing;
+            }
+            if (current.State == "otp") return SetState(Yolcu360SessionState.WaitingForOtp, "SMS doğrulaması zaten bekleniyor. Yeni SMS gönderilmedi; kodu uygulamaya girin.");
+            if (current.State == "timeout") return FailAuth("Sayfa başlangıç işlemleri tamamlanmadı. Giriş yeniden başlatılmadı; bağlantıyı kontrol edip tekrar deneyin.");
+            var ready = current;
+            if (current.State != "phone")
+            {
+                SetState(Yolcu360SessionState.LoadingLoginPage, "Yolcu360 giriş sayfası açılıyor...");
+                await NavigateAsync(LoginUrl, token);
+                SetState(Yolcu360SessionState.WaitingForPhoneField, "Telefon formunun hazır olması bekleniyor...");
+                ready = await WaitForLoginStageAsync("ready", s => s is "phone" or "otp" or "authenticated", PageTimeout, token);
+            }
+            if (ready.State == "authenticated") return await ValidateAuthenticatedSessionAsync(token);
             if (ready.State == "otp") return SetState(Yolcu360SessionState.WaitingForOtp, "SMS kodunu uygulamadaki 6 haneli alana girin.");
             ThrowOnPageError(ready, false);
             if (ready.State != "phone") return FailAuth("Giriş sayfasındaki telefon alanı hazır değil. Sayfayı ve internet bağlantısını kontrol edin.");
+            var phoneNumber = await phoneProvider(token);
+            var nationalPhone = NormalizeTurkishPhoneNumber(phoneNumber ?? "");
 
             SetState(Yolcu360SessionState.WaitingForPhoneField, "Ülke seçicisi açılıyor: Türkiye (+90)...");
-            await WaitForLoginActionAsync("open-country", s => s is "country-open" or "country-ready", "Sitedeki ülke seçicisi açılamadı.", cancellationToken);
-            await WaitForLoginActionAsync("select-country", s => s == "country-ready", "TR +90 seçeneği seçilemedi veya seçili ülke doğrulanamadı.", cancellationToken);
+            await WaitForLoginActionAsync("open-country", s => s is "country-open" or "country-ready", "Sitedeki ülke seçicisi açılamadı.", token);
+            await WaitForLoginActionAsync("select-country", s => s == "country-ready", "TR +90 seçeneği seçilemedi veya seçili ülke doğrulanamadı.", token);
             SetState(Yolcu360SessionState.SubmittingPhone, "Türkiye (+90) seçildi. MySQL telefon numarası forma yazılıyor...");
-            await WaitForLoginActionAsync("fill-phone", s => s == "phone-filled", "Telefon alanı görünür ve düzenlenebilir değil.", cancellationToken, phone: nationalPhone);
-            await WaitForLoginActionAsync("check-phone", s => s == "phone-verified", "Formdaki telefon numarası veya +90 ülke kodu MySQL kaydıyla eşleşmiyor. Gönderim yapılmadı.", cancellationToken, phone: nationalPhone);
+            await WaitForLoginActionAsync("fill-phone", s => s == "phone-filled", "Telefon alanı görünür ve düzenlenebilir değil.", token, phone: nationalPhone);
+            await WaitForLoginActionAsync("check-phone", s => s == "phone-verified", "Formdaki telefon numarası veya +90 ülke kodu MySQL kaydıyla eşleşmiyor. Gönderim yapılmadı.", token, phone: nationalPhone);
             // Read back again after a Vue render/mask update before clicking exactly once.
-            await Task.Delay(250, cancellationToken);
-            if ((await LoginDomAsync("check-phone", cancellationToken, phone: nationalPhone)).State != "phone-verified")
+            await Task.Delay(250, token);
+            if ((await LoginDomAsync("check-phone", token, phone: nationalPhone)).State != "phone-verified")
                 return FailAuth("Telefon numarası sayfanın maskelemesi sırasında değişti. Gönderim yapılmadı.");
             SetState(Yolcu360SessionState.SubmittingPhone, "+90 ve telefon numarası doğrulandı. Devam Et düğmesine basılıyor...");
-            await WaitForLoginActionAsync("submit-phone", s => s == "phone-submitted", "Devam Et düğmesi etkin değil veya telefon formu değişti. SMS gönderimi doğrulanamadı.", cancellationToken, phone: nationalPhone);
-            var result = await WaitForLoginStageAsync("phone", s => s is "otp" or "authenticated", TimeSpan.FromSeconds(50), cancellationToken);
+            await WaitForLoginActionAsync("submit-phone", s => s == "phone-submitted", "Devam Et düğmesi etkin değil veya telefon formu değişti. SMS gönderimi doğrulanamadı.", token, phone: nationalPhone);
+            var result = await WaitForLoginStageAsync("phone", s => s is "otp" or "authenticated", TimeSpan.FromSeconds(50), token);
             ThrowOnPageError(result, false);
-            if (result.State == "authenticated") return SetState(Yolcu360SessionState.Authenticated, "Yolcu360 hesabına giriş doğrulandı.", true);
+            if (result.State == "authenticated") return await ValidateAuthenticatedSessionAsync(token);
             if (result.State == "otp") return SetState(Yolcu360SessionState.WaitingForOtp, "SMS doğrulama ekranı açıldı. Telefonunuza gelen 6 haneli kodu uygulamaya girin.");
             return FailAuth("Devam Et gönderildi ancak SMS doğrulama ekranı açılmadı. Sitedeki uyarıyı kontrol edin; yeniden SMS gönderilmedi.");
         }
+        catch (SessionAlreadyAuthenticatedException) { return await ValidateAuthenticatedSessionAsync(token); }
         catch (OperationCanceledException) { return SetState(Yolcu360SessionState.Cancelled, "Giriş işlemi iptal edildi."); }
         catch (Exception ex) { return FailAuth("Giriş tamamlanamadı: " + ex.Message); }
         finally { _operationLock.Release(); }
@@ -88,28 +129,33 @@ public sealed partial class Yolcu360Browser : IDisposable
 
     public async Task<BrowserOperationResult> VerifyOtpAsync(string otp, CancellationToken cancellationToken = default)
     {
+        if (_shutdownRequested) return new BrowserOperationResult(State, "Uygulama kapatılıyor.");
         if (!Regex.IsMatch(otp ?? "", @"\A[0-9]{6}\z"))
             return SetState(Yolcu360SessionState.WaitingForOtp, "SMS ile gelen 6 haneli sayısal kodu girin.");
-        await _operationLock.WaitAsync(cancellationToken);
+        if (!await _operationLock.WaitAsync(0, cancellationToken)) return new BrowserOperationResult(State, "Bir tarayıcı işlemi devam ediyor.");
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetimeCancellation.Token);
+        var token = linked.Token;
         try
         {
+            await InitializeAsync(token);
             SetState(Yolcu360SessionState.VerifyingOtp, "SMS kodu Yolcu360 doğrulama alanına aktarılıyor...");
-            var before = await LoginDomAsync("state", cancellationToken, phase: "verify");
+            var before = await LoginDomAsync("state", token, phase: "verify");
             // The site's OTP component retains an old rejection while a new request is pending.
             var priorErrorKey = before.State == "invalid" ? before.ErrorKey ?? "" : null;
             if (before.State != "invalid") ThrowOnPageError(before, true);
-            if (before.State == "authenticated") return SetState(Yolcu360SessionState.Authenticated, "Yolcu360 hesabına giriş doğrulandı.", true);
-            await WaitForLoginActionAsync("fill-otp", s => s == "otp-filled", "Sitedeki SMS doğrulama alanı bulunamadı veya düzenlenebilir değil.", cancellationToken, otp: otp);
-            await WaitForLoginActionAsync("check-otp", s => s == "otp-verified", "Kod web formuna doğru aktarılamadı. Gönderim yapılmadı.", cancellationToken, otp: otp);
+            if (before.State == "authenticated") return await ValidateAuthenticatedSessionAsync(token);
+            await WaitForLoginActionAsync("fill-otp", s => s == "otp-filled", "Sitedeki SMS doğrulama alanı bulunamadı veya düzenlenebilir değil.", token, otp: otp);
+            await WaitForLoginActionAsync("check-otp", s => s == "otp-verified", "Kod web formuna doğru aktarılamadı. Gönderim yapılmadı.", token, otp: otp);
             SetState(Yolcu360SessionState.VerifyingOtp, "Kod, sitenin normal doğrulama düğmesiyle gönderiliyor...");
             _otpResponseStatus = 0;
-            await WaitForLoginActionAsync("submit-otp", s => s == "otp-submitted", "Sitenin doğrulama düğmesi bulunamadı veya etkin değil.", cancellationToken, otp: otp);
-            await Task.Delay(750, cancellationToken);
-            var result = await WaitForLoginStageAsync("verify", s => s == "authenticated", PageTimeout, cancellationToken, priorErrorKey);
+            await WaitForLoginActionAsync("submit-otp", s => s == "otp-submitted", "Sitenin doğrulama düğmesi bulunamadı veya etkin değil.", token, otp: otp);
+            await Task.Delay(750, token);
+            var result = await WaitForLoginStageAsync("verify", s => s == "authenticated", PageTimeout, token, priorErrorKey);
             ThrowOnPageError(result, true);
-            if (result.State == "authenticated") return SetState(Yolcu360SessionState.Authenticated, "Giriş başarılı: Yolcu360 hesap menüsü doğrulandı.", true);
+            if (result.State == "authenticated") return await ValidateAuthenticatedSessionAsync(token);
             return SetState(Yolcu360SessionState.WaitingForOtp, "Yolcu360 giriş başarısını doğrulamadı. Kodun süresini ve sitedeki mesajı kontrol edin; gönderim otomatik tekrarlanmadı.");
         }
+        catch (SessionAlreadyAuthenticatedException) { return await ValidateAuthenticatedSessionAsync(token); }
         catch (OperationCanceledException) { return SetState(Yolcu360SessionState.Cancelled, "SMS doğrulaması iptal edildi."); }
         catch (CodeExpiredException ex) { return FailAuth(ex.Message); }
         catch (Exception ex) { return SetState(Yolcu360SessionState.WaitingForOtp, "SMS doğrulaması tamamlanamadı: " + ex.Message); }
@@ -170,9 +216,11 @@ public sealed partial class Yolcu360Browser : IDisposable
             var page = await LoginDomAsync("state", token, phase: "ready");
             if (page.State == "challenge")
             {
-                await WaitForLoginStageAsync("ready", s => s is "phone" or "otp" or "authenticated", PageTimeout, token);
+                await ResolveHumanVerificationAsync(token);
                 timer.Restart();
+                page = await LoginDomAsync("state", token, phase: "ready");
             }
+            if (page.State == "authenticated") throw new SessionAlreadyAuthenticatedException();
             ThrowOnPageError(page, action.Contains("otp", StringComparison.Ordinal));
             var result = await LoginDomAsync(action, token, phone, otp);
             if (ready(result.State)) return;
@@ -184,7 +232,6 @@ public sealed partial class Yolcu360Browser : IDisposable
     private async Task<LoginPageState> WaitForLoginStageAsync(string phase, Func<string, bool> ready, TimeSpan timeout, CancellationToken token, string? priorErrorKey = null)
     {
         var deadline = DateTime.UtcNow + timeout;
-        DateTime? challengeSince = null;
         while (DateTime.UtcNow < deadline)
         {
             token.ThrowIfCancellationRequested();
@@ -192,21 +239,11 @@ public sealed partial class Yolcu360Browser : IDisposable
             var result = await LoginDomAsync("state", token, phase: phase);
             if (result.State == "challenge")
             {
-                if (challengeSince is null)
-                {
-                    challengeSince = DateTime.UtcNow;
-                    SetState(Yolcu360SessionState.WaitingForSecurityChallenge, "Sitenin güvenlik kontrolünü tarayıcı panelinde tamamlayın. Uygulama ardından devam edecek.");
-                }
-                if (DateTime.UtcNow - challengeSince > ChallengeTimeout) throw new TimeoutException("Güvenlik kontrolü 3 dakika içinde tamamlanmadı.");
+                await ResolveHumanVerificationAsync(token);
                 deadline = DateTime.UtcNow + timeout;
             }
             else
             {
-                if (challengeSince is not null)
-                {
-                    challengeSince = null;
-                    SetState(phase == "verify" ? Yolcu360SessionState.VerifyingOtp : Yolcu360SessionState.SubmittingPhone, "Güvenlik kontrolü tamamlandı. Sitenin yanıtı bekleniyor...");
-                }
                 var staleError = result.State == "invalid" && priorErrorKey is not null && (result.ErrorKey ?? "") == priorErrorKey && _otpResponseStatus < 400;
                 if (!staleError && (ready(result.State) || result.State is "invalid" or "expired" or "network-error" or "registration")) return result;
             }
@@ -282,6 +319,11 @@ public sealed partial class Yolcu360Browser : IDisposable
             cancellationToken.ThrowIfCancellationRequested();
             if (await EvalStringAsync("document.readyState", cancellationToken) == "complete"
                 && Control.Source?.Scheme == "https") return;
+            if ((await LoginDomAsync("state", cancellationToken, phase: "ready")).State == "challenge")
+            {
+                await ResolveHumanVerificationAsync(cancellationToken);
+                until = DateTime.UtcNow + timeout;
+            }
             await Task.Delay(200, cancellationToken);
         }
         throw new TimeoutException("Yolcu360 page did not finish loading.");
@@ -321,5 +363,13 @@ public sealed partial class Yolcu360Browser : IDisposable
         return result;
     }
 
-    public void Dispose() { _disposed = true; Control.Dispose(); }
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _shutdownRequested = true;
+        _lifetimeCancellation.Cancel();
+        if (_operationLock.CurrentCount == 0 || _initializationTask is { IsCompleted: false })
+        { _ = DisposeAfterOperationsAsync(); return; }
+        DisposeControl();
+    }
 }

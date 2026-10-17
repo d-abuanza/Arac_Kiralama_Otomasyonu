@@ -12,6 +12,7 @@ public sealed class MainForm : Form
     private readonly IBookingService _bookings = new MockBookingService();
     private readonly IPngReportExporter _reports = new PngReportExporter();
     private readonly Yolcu360Browser _browser = new();
+    private readonly BackgroundBrowserHost _browserHost;
     private readonly long _userId;
     private readonly TextBox _location = new() { Name = "txtPickupLocation", AccessibleName = "Alış yeri", Text = "Istanbul Airport", Width = 190 };
     private readonly DateTimePicker _pickup = new() { Name = "dtpPickup", AccessibleName = "Alış tarihi ve saati", Format = DateTimePickerFormat.Custom, CustomFormat = "dd.MM.yyyy HH:mm", Width = 150, Value = DateTime.Now.AddDays(7) };
@@ -34,10 +35,14 @@ public sealed class MainForm : Form
     private readonly BindingSource _binding = new();
     private readonly TabControl _tabs = new() { Dock = DockStyle.Fill };
     private bool _browserReady;
+    private bool _sessionCheckInProgress;
     private bool _loginInProgress;
     private bool _otpSubmitting;
     private bool _searchInProgress;
     private bool _closing;
+    private bool _shutdownComplete;
+    private bool _shutdownInProgress;
+    private Task? _initializationTask;
     private bool _hasResultSet;
     private string _resultContext = "";
     private long _searchVersion;
@@ -51,7 +56,10 @@ public sealed class MainForm : Form
         _database = database;
         _siteCredentials = siteCredentials;
         _userId = userId;
+        _browserHost = new BackgroundBrowserHost(_browser.Control);
+        _browserHost.VerificationCancelled += CancelHumanVerification;
         _browser.StateChanged += BrowserStateChanged;
+        _browser.HumanVerificationVisibilityChanged += HumanVerificationVisibilityChanged;
         Text = "CarRentalAutomation | Open Yazilim";
         Width = 1180; Height = 760; StartPosition = FormStartPosition.CenterScreen;
         _fuel.Items.AddRange(["Tümü", "Benzin", "Dizel", "Benzin/Dizel", "Hibrit", "Elektrik"]); _fuel.SelectedIndex = 0;
@@ -93,12 +101,11 @@ public sealed class MainForm : Form
             _btnStartLogin, _btnSearch, _btnSave, _btnBook, _loginStatus]);
         _otpPanel.Controls.AddRange([new Label { Text = "SMS kodu (6 rakam):", AutoSize = true, Padding = new Padding(0, 6, 0, 0) }, txtOtp, btnVerifyOtp, _otpStatus]);
         var resultsTab = new TabPage("Arac arama"); resultsTab.Controls.Add(_grid); _grid.DataSource = _binding;
-        var browserTab = new TabPage("Yolcu360 guvenlik / onay"); browserTab.Controls.Add(_browser.Control);
         var historyTab = new TabPage("Gecmis kayitlar");
         var historyButtons = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 45 };
         historyButtons.Controls.AddRange([Button("Yukle", LoadSelected), Button("Sil", DeleteSelected), Button("PNG disa aktar", ExportSelected)]);
         historyTab.Controls.Add(_history); historyTab.Controls.Add(historyButtons);
-        _tabs.TabPages.Add(resultsTab); _tabs.TabPages.Add(browserTab); _tabs.TabPages.Add(historyTab);
+        _tabs.TabPages.Add(resultsTab); _tabs.TabPages.Add(historyTab);
         root.Controls.Add(searchPanel, 0, 0); root.Controls.Add(_otpPanel, 0, 1); root.Controls.Add(_tabs, 0, 2); root.Controls.Add(_status, 0, 3);
         Controls.Add(root);
         btnVerifyOtp.Click += VerifyOtpClicked;
@@ -119,9 +126,13 @@ public sealed class MainForm : Form
         _btnSearch.Click += SearchClicked;
         _btnSave.Click += SaveClicked;
         _btnBook.Click += BookClicked;
-        FormClosing += (_, _) => { _closing = true; _lifetimeCancellation.Cancel(); txtOtp.Clear(); };
-        FormClosed += (_, _) => { _browser.StateChanged -= BrowserStateChanged; _browser.Dispose(); _lifetimeCancellation.Dispose(); };
-        Shown += async (_, _) => await InitializeSessionAsync();
+        FormClosing += CloseApplicationAsync;
+        Shown += async (_, _) =>
+        {
+            _browserHost.StartInBackground(this);
+            _initializationTask = InitializeSessionAsync();
+            await _initializationTask;
+        };
     }
 
     private static Button Button(string text, EventHandler handler)
@@ -139,28 +150,28 @@ public sealed class MainForm : Form
             _loginStatus.Text = "Initializing secure Yolcu360 browser...";
             await _browser.InitializeAsync(_lifetimeCancellation.Token);
             _browserReady = true;
-            _loginStatus.Text = "Telefon numarasını MySQL'den alıp giriş yapmak için Giriş işlemini başlat'a tıklayın.";
+            _sessionCheckInProgress = true;
+            UpdateBrowserControls();
+            var session = await _browser.CheckSessionAsync(_lifetimeCancellation.Token);
+            if (!_closing) _loginStatus.Text = session.Message;
         }
         catch (OperationCanceledException) when (_closing) { }
         catch (Exception ex) { if (!_closing) _loginStatus.Text = "Startup failed: " + ex.Message; }
-        finally { UpdateBrowserControls(); }
+        finally { _sessionCheckInProgress = false; UpdateBrowserControls(); }
     }
 
     private async Task StartLoginAsync()
     {
         if (!_browserReady) { _loginStatus.Text = "Browser is not ready."; return; }
-        if (_closing || _loginInProgress || _otpSubmitting || _searchInProgress) return;
+        if (_closing || _sessionCheckInProgress || _loginInProgress || _otpSubmitting || _searchInProgress) return;
         _loginInProgress = true;
         _otpPanel.Visible = false;
         txtOtp.Clear();
-        _tabs.SelectedIndex = 1;
         UpdateBrowserControls();
         try
         {
-            _loginStatus.Text = "Loading the phone profile from MySQL...";
-            var phone = await _siteCredentials.GetPhoneNumberAsync(_userId, _lifetimeCancellation.Token);
-            if (string.IsNullOrWhiteSpace(phone)) { _loginStatus.Text = "No phone profile exists in SiteCredentials for this application user."; return; }
-            await _browser.AuthenticateAsync(phone, _lifetimeCancellation.Token);
+            _loginStatus.Text = "Mevcut Yolcu360 oturumu kontrol ediliyor...";
+            await _browser.AuthenticateAsync(token => _siteCredentials.GetPhoneNumberAsync(_userId, token), _lifetimeCancellation.Token);
         }
         catch (OperationCanceledException) when (_closing) { }
         catch (Exception ex) { if (!_closing) _loginStatus.Text = "Login could not start: " + ex.Message; }
@@ -194,7 +205,6 @@ public sealed class MainForm : Form
                 _otpPanel.Visible = false;
                 txtOtp.Clear();
             }
-            if (result.State == Yolcu360SessionState.WaitingForSecurityChallenge) _tabs.SelectedIndex = 1;
             UpdateBrowserControls();
         }
         if (InvokeRequired)
@@ -207,7 +217,7 @@ public sealed class MainForm : Form
 
     private async void VerifyOtpClicked(object? sender, EventArgs e)
     {
-        if (_closing || _loginInProgress || _otpSubmitting || _searchInProgress || _browser.State != Yolcu360SessionState.WaitingForOtp) return;
+        if (_closing || _sessionCheckInProgress || _loginInProgress || _otpSubmitting || _searchInProgress || _browser.State != Yolcu360SessionState.WaitingForOtp) return;
         var code = txtOtp.Text;
         if (code.Length != 6 || code.Any(c => c is < '0' or > '9'))
         {
@@ -226,7 +236,7 @@ public sealed class MainForm : Form
 
     private async void SearchClicked(object? sender, EventArgs e)
     {
-        if (_closing || !_browserReady || _loginInProgress || _otpSubmitting || _searchInProgress) return;
+        if (_closing || !_browserReady || _sessionCheckInProgress || _loginInProgress || _otpSubmitting || _searchInProgress) return;
         if (_browser.State is not (Yolcu360SessionState.Authenticated or Yolcu360SessionState.SearchFailed))
         {
             _loginStatus.Text = "Önce Yolcu360 girişini ve SMS doğrulamasını tamamlayın.";
@@ -252,7 +262,7 @@ public sealed class MainForm : Form
             _binding.DataSource = Array.Empty<CarOffer>();
             _grid.ClearSelection();
             UpdateBrowserControls();
-            _tabs.SelectedIndex = 1;
+            _tabs.SelectedIndex = 0;
             var timeNote = adjustedTimes ? $"Site 30 dakika aralıklarını kullanır. Alış: {criteria.PickupAt:dd.MM.yyyy HH:mm}, dönüş: {criteria.ReturnAt:dd.MM.yyyy HH:mm}. " : "";
             SetBusy(true, timeNote + "Yolcu360 üzerinde yeni arama gönderiliyor...");
             var (result, offers) = await _browser.SearchAsync(criteria, _lifetimeCancellation.Token);
@@ -282,7 +292,7 @@ public sealed class MainForm : Form
     private void UpdateBrowserControls()
     {
         if (_closing || IsDisposed) return;
-        var busy = _loginInProgress || _otpSubmitting || _searchInProgress;
+        var busy = _sessionCheckInProgress || _loginInProgress || _otpSubmitting || _searchInProgress;
         _btnStartLogin.Enabled = _browserReady && !busy;
         _btnSearch.Enabled = _browserReady && !busy && (_browser.State is Yolcu360SessionState.Authenticated or Yolcu360SessionState.SearchFailed);
         _location.Enabled = _pickup.Enabled = _return.Enabled = _fuel.Enabled = _transmission.Enabled = !_searchInProgress;
@@ -309,17 +319,30 @@ public sealed class MainForm : Form
 
     private async void SaveClicked(object? sender, EventArgs e)
     {
-        if (_searchInProgress) return;
+        if (_closing || _searchInProgress) return;
         if (_criteria is null || _binding.Count == 0) { MessageBox.Show(this, "Search for offers first."); return; }
         var name = Microsoft.VisualBasic.Interaction.InputBox("Collection name:", "Save collection");
-        if (string.IsNullOrWhiteSpace(name)) return;
-        try { await _collections.SaveAsync(name, _criteria, ((IEnumerable<CarOffer>)_binding.List).ToArray()); await RefreshHistoryAsync(); _status.Text = "Collection saved."; }
-        catch (Exception ex) { MessageBox.Show(this, ex.Message, "Save failed"); }
+        if (_closing || string.IsNullOrWhiteSpace(name)) return;
+        var token = _lifetimeCancellation.Token;
+        try
+        {
+            var collectionCriteria = _criteria with
+            {
+                FuelFilter = _fuel.SelectedItem?.ToString() ?? "Tümü",
+                TransmissionFilter = _transmission.SelectedItem?.ToString() ?? "Tümü"
+            };
+            await _collections.SaveAsync(name, collectionCriteria, ((IEnumerable<CarOffer>)_binding.List).ToArray(), token);
+            if (_closing) return;
+            await RefreshHistoryAsync();
+            if (!_closing) _status.Text = "Collection saved.";
+        }
+        catch (OperationCanceledException) when (_closing) { }
+        catch (Exception ex) { if (!_closing) MessageBox.Show(this, ex.Message, "Save failed"); }
     }
 
     private async void BookClicked(object? sender, EventArgs e)
     {
-        if (_searchInProgress) return;
+        if (_closing || _searchInProgress) return;
         if (_grid.CurrentRow?.DataBoundItem is not CarOffer car) { MessageBox.Show(this, "Select an offer first."); return; }
         if (MessageBox.Show(this, $"Create a simulated booking for {car.Model}, {car.Price:N2} {car.Currency}?", "Simulation only", MessageBoxButtons.YesNo) != DialogResult.Yes) return;
         var booking = await _bookings.CreateSimulatedBookingAsync(car);
@@ -329,41 +352,122 @@ public sealed class MainForm : Form
     }
 
     private async Task RefreshHistoryAsync()
-    { _saved = (await _collections.GetAllAsync()).ToList(); _history.DataSource = null; _history.DataSource = _saved; _history.DisplayMember = nameof(SavedCollection.Name); }
+    {
+        if (_closing) return;
+        var saved = (await _collections.GetAllAsync(_lifetimeCancellation.Token)).ToList();
+        if (_closing) return;
+        _saved = saved; _history.DataSource = null; _history.DataSource = _saved; _history.DisplayMember = nameof(SavedCollection.Name);
+    }
     private SavedCollection? SelectedCollection => _history.SelectedItem as SavedCollection;
     private async void LoadSelected(object? sender, EventArgs e)
     {
-        if (_searchInProgress) return;
+        if (_closing || _searchInProgress) return;
         if (SelectedCollection is not { } selected) return;
         var searchVersion = _searchVersion;
         var collection = selected;
         if (_collections is MySqlCollectionRepository repo)
         {
-            try { collection = await repo.GetByIdAsync(selected.Id) ?? selected; }
-            catch (Exception ex) { MessageBox.Show(this, ex.Message, "Load failed"); return; }
+            try { collection = await repo.GetByIdAsync(selected.Id, _lifetimeCancellation.Token) ?? selected; }
+            catch (OperationCanceledException) when (_closing) { return; }
+            catch (Exception ex) { if (!_closing) MessageBox.Show(this, ex.Message, "Load failed"); return; }
         }
         if (_closing || _searchInProgress || searchVersion != _searchVersion) return;
         _criteria = collection.Criteria; _offers = collection.Cars.ToList();
         _hasResultSet = true;
         _resultContext = $"'{collection.Name}' koleksiyonu yüklendi. Fiyatlar kaydedilmiş anlık görüntülerdir.";
         _location.Text = collection.Criteria.PickupLocation; _pickup.Value = collection.Criteria.PickupAt; _return.Value = collection.Criteria.ReturnAt;
-        _fuel.SelectedIndex = 0; _transmission.SelectedIndex = 0; ApplyFilters();
+        _fuel.SelectedItem = _fuel.Items.Contains(collection.Criteria.FuelFilter) ? collection.Criteria.FuelFilter : "Tümü";
+        _transmission.SelectedItem = _transmission.Items.Contains(collection.Criteria.TransmissionFilter) ? collection.Criteria.TransmissionFilter : "Tümü";
+        ApplyFilters();
     }
     private async void DeleteSelected(object? sender, EventArgs e)
     {
+        if (_closing) return;
         if (SelectedCollection is not { } collection) return;
         if (MessageBox.Show(this, $"Delete '{collection.Name}'?", "Confirm", MessageBoxButtons.YesNo) != DialogResult.Yes) return;
-        await _collections.DeleteAsync(collection.Id); await RefreshHistoryAsync();
+        if (_closing) return;
+        try { await _collections.DeleteAsync(collection.Id, _lifetimeCancellation.Token); if (!_closing) await RefreshHistoryAsync(); }
+        catch (OperationCanceledException) when (_closing) { }
+        catch (Exception ex) { if (!_closing) MessageBox.Show(this, ex.Message, "Delete failed"); }
     }
     private async void ExportSelected(object? sender, EventArgs e)
     {
+        if (_closing) return;
         if (SelectedCollection is not { } collection) return;
-        if (_collections is MySqlCollectionRepository repo)
-            collection = await repo.GetByIdAsync(collection.Id) ?? collection;
+        try
+        {
+            if (_collections is MySqlCollectionRepository repo)
+                collection = await repo.GetByIdAsync(collection.Id, _lifetimeCancellation.Token) ?? collection;
+        }
+        catch (OperationCanceledException) when (_closing) { return; }
+        catch (Exception ex) { if (!_closing) MessageBox.Show(this, ex.Message, "Export failed"); return; }
+        if (_closing) return;
         using var dialog = new SaveFileDialog { Filter = "PNG image|*.png", FileName = $"{collection.Name}.png" };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         try { _reports.Export(collection, dialog.FileName); MessageBox.Show(this, "PNG report exported."); }
         catch (Exception ex) { MessageBox.Show(this, ex.Message, "Export failed"); }
     }
     private void SetBusy(bool busy, string message) { UseWaitCursor = busy; _status.Text = message; }
+
+    private void HumanVerificationVisibilityChanged(bool visible)
+    {
+        if (_closing || IsDisposed || !IsHandleCreated) return;
+        void ApplyVisibility()
+        {
+            if (_closing || IsDisposed) return;
+            if (visible) _browserHost.ShowVerification();
+            else _browserHost.ReturnToBackground();
+        }
+        if (InvokeRequired)
+        {
+            try { BeginInvoke((Action)ApplyVisibility); }
+            catch (InvalidOperationException) when (_closing || IsDisposed) { }
+        }
+        else ApplyVisibility();
+    }
+
+    private void CancelHumanVerification()
+    {
+        if (_closing) return;
+        _browser.CancelHumanVerification();
+        _browserHost.ReturnToBackground();
+        _loginStatus.Text = "Güvenlik doğrulaması iptal edildi. İşlemi yeniden başlatabilirsiniz.";
+    }
+
+    private async void CloseApplicationAsync(object? sender, FormClosingEventArgs e)
+    {
+        if (_shutdownComplete) return;
+        e.Cancel = true;
+        if (_shutdownInProgress) return;
+        _shutdownInProgress = true;
+        _closing = true;
+        _lifetimeCancellation.Cancel();
+        txtOtp.Clear();
+        _btnStartLogin.Enabled = _btnSearch.Enabled = btnVerifyOtp.Enabled = _btnSave.Enabled = _btnBook.Enabled = false;
+        _status.Text = "Uygulama kapatılıyor...";
+        _browser.CancelHumanVerification();
+        _browserHost.ReturnToBackground();
+        try
+        {
+            if (_initializationTask is not null) await _initializationTask;
+            await _browser.ShutdownAsync();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception)
+        {
+            // An interrupted WebView2 initialization must not leave the owned window/process alive.
+            // Disposal below still runs, and no credential or verification values are logged.
+        }
+        finally
+        {
+            _browser.StateChanged -= BrowserStateChanged;
+            _browser.HumanVerificationVisibilityChanged -= HumanVerificationVisibilityChanged;
+            _browserHost.VerificationCancelled -= CancelHumanVerification;
+            _browserHost.CloseAfterShutdown();
+            _browser.Dispose();
+            _lifetimeCancellation.Dispose();
+            _shutdownComplete = true;
+            Close();
+        }
+    }
 }

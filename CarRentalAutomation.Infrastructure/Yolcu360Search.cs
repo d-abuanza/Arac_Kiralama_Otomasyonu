@@ -12,11 +12,12 @@ public sealed partial class Yolcu360Browser
     public async Task<(BrowserOperationResult Result, IReadOnlyList<CarOffer> Offers)> SearchAsync(
         SearchCriteria criteria, CancellationToken cancellationToken = default)
     {
+        if (_shutdownRequested) return (new BrowserOperationResult(State, "Uygulama kapatılıyor."), []);
         // A second caller must not queue a duplicate search behind the current operation.
         if (!await _operationLock.WaitAsync(0, cancellationToken))
             return (new BrowserOperationResult(State, "Bir işlem devam ediyor. Tamamlanmasını bekleyin."), []);
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromMinutes(4));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetimeCancellation.Token);
+        timeout.CancelAfter(TimeSpan.FromMinutes(8));
         var token = timeout.Token;
         var operation = Guid.NewGuid().ToString("N");
         try
@@ -24,6 +25,9 @@ public sealed partial class Yolcu360Browser
             criteria.Validate();
             if (criteria.PickupAt.Minute % 30 != 0 || criteria.ReturnAt.Minute % 30 != 0)
                 throw new ArgumentException("Yolcu360 için saatleri 00 veya 30 dakika olarak seçin.");
+            await InitializeAsync(token);
+            var session = await CheckSessionCoreAsync(token);
+            if (!session.Succeeded) return (session, []);
             SetState(Yolcu360SessionState.Searching, "Yolcu360 arama formu hazırlanıyor...");
             // Start from a fresh form in the same browser profile. Previous cards cannot satisfy this search.
             await NavigateAsync("https://yolcu360.com/", token);
@@ -90,11 +94,8 @@ public sealed partial class Yolcu360Browser
         }
         catch (SearchLoginRequiredException)
         { return (SetState(Yolcu360SessionState.AuthenticationFailed, "Yolcu360 oturumu doğrulanamadı veya sona erdi. Giriş işlemini başlat'a tıklayın."), []); }
-        catch (SearchChallengeException)
-        {
-            SetState(Yolcu360SessionState.WaitingForSecurityChallenge, "Sitenin güvenlik kontrolünü tarayıcı panelinde tamamlayın.");
-            return (SetState(Yolcu360SessionState.SearchFailed, "Güvenlik kontrolü gerekiyor. Tarayıcı panelinde tamamlayıp uygulamada Ara'ya tekrar basın."), []);
-        }
+        catch (HumanVerificationCancelledException)
+        { return (SetState(Yolcu360SessionState.SearchFailed, "İnsan doğrulaması iptal edildi. Arama durduruldu; otomatik yeniden gönderilmedi."), []); }
         catch (OperationCanceledException)
         { return (SetState(Yolcu360SessionState.SearchFailed, cancellationToken.IsCancellationRequested ? "Arama iptal edildi." : "Arama zaman aşımına uğradı. İnternet bağlantısını kontrol edip tekrar deneyin."), []); }
         catch (Exception ex)
@@ -105,15 +106,22 @@ public sealed partial class Yolcu360Browser
     private async Task<JsonElement> SearchDomAsync(string action, SearchCriteria criteria, string operation, CancellationToken token)
     {
         if (_navigationError is { } error) throw new IOException("Yolcu360 sayfası yüklenemedi (" + error + ").");
-        return await EvaluateJsonAsync(Yolcu360SearchScript.Create(action, criteria, operation), token);
+        while (true)
+        {
+            var result = await EvaluateJsonAsync(Yolcu360SearchScript.Create(action, criteria, operation), token);
+            if (result.GetProperty("state").GetString() != "challenge") return result;
+            await ResolveHumanVerificationAsync(token);
+            // The script's challenge guard precedes every mutation. Resume this step without restarting the search.
+        }
     }
 
     private async Task<JsonElement> SearchStepAsync(string action, SearchCriteria criteria, string operation,
         string[] expected, CancellationToken token, TimeSpan? timeout = null)
     {
         var timer = Stopwatch.StartNew();
+        var humanWaitAtStart = _humanVerificationTime;
         var state = "unknown";
-        while (timer.Elapsed < (timeout ?? TimeSpan.FromSeconds(15)))
+        while (timer.Elapsed - (_humanVerificationTime - humanWaitAtStart) < (timeout ?? TimeSpan.FromSeconds(15)))
         {
             var result = await SearchDomAsync(action, criteria, operation, token);
             ThrowSearchPageError(result);
@@ -136,12 +144,16 @@ public sealed partial class Yolcu360Browser
     private async Task<JsonElement> WaitForSearchResultsAsync(SearchCriteria criteria, string operation, CancellationToken token)
     {
         var timer = Stopwatch.StartNew();
+        var humanWaitAtStart = _humanVerificationTime;
         string? previous = null;
         var stableSince = DateTime.UtcNow;
-        while (timer.Elapsed < TimeSpan.FromSeconds(60))
+        while (timer.Elapsed - (_humanVerificationTime - humanWaitAtStart) < TimeSpan.FromSeconds(60))
         {
+            var waitedBeforeRead = _humanVerificationTime;
             var result = await SearchDomAsync("results-state", criteria, operation, token);
+            if (_humanVerificationTime != waitedBeforeRead) { previous = null; stableSince = DateTime.UtcNow; }
             ThrowSearchPageError(result);
+            if (_searchResponseStatus == 401) throw new SearchLoginRequiredException();
             if (_searchResponseStatus >= 400) throw new IOException($"Yolcu360 arama isteğini kabul etmedi (HTTP {_searchResponseStatus}).");
             var state = result.GetProperty("state").GetString();
             if ((state is "results" or "empty") && _searchResponseStatus is >= 200 and < 300)
@@ -158,11 +170,15 @@ public sealed partial class Yolcu360Browser
     private async Task<int> ExpandSearchResultsAsync(SearchCriteria criteria, string operation, int? total, CancellationToken token)
     {
         var timer = Stopwatch.StartNew();
+        var humanWaitAtStart = _humanVerificationTime;
         var count = 0;
         var lastGrowth = DateTime.UtcNow;
-        while (timer.Elapsed < TimeSpan.FromSeconds(75))
+        var lastObservedHumanWait = _humanVerificationTime;
+        while (timer.Elapsed - (_humanVerificationTime - humanWaitAtStart) < TimeSpan.FromSeconds(75))
         {
             var page = await SearchDomAsync("results-state", criteria, operation, token);
+            if (_humanVerificationTime != lastObservedHumanWait) lastGrowth = DateTime.UtcNow;
+            lastObservedHumanWait = _humanVerificationTime;
             ThrowSearchPageError(page);
             var now = page.TryGetProperty("count", out var itemCount) ? itemCount.GetInt32() : 0;
             if (now > count) { count = now; lastGrowth = DateTime.UtcNow; }

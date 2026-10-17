@@ -11,7 +11,7 @@ public sealed class PngReportExporter : IPngReportExporter
     {
         var pages = Math.Max(1, (int)Math.Ceiling(collection.Cars.Count / 25d));
         var width = pages > 1 ? 1400 : 1200;
-        var height = pages == 1 ? Math.Max(500, 260 + collection.Cars.Count * 28) : PageHeight * pages;
+        var height = pages == 1 ? Math.Max(500, 194 + collection.Cars.Count * 34) : PageHeight * pages;
         using var bitmap = new Bitmap(width, height);
         using var graphics = Graphics.FromImage(bitmap);
         graphics.Clear(Color.White);
@@ -22,12 +22,13 @@ public sealed class PngReportExporter : IPngReportExporter
         graphics.DrawString("Araç Kiralama Teklif Raporu", titleFont, brush, 32, 24);
         graphics.DrawString($"Koleksiyon: {collection.Name}    Oluşturma: {DateTime.Now:dd.MM.yyyy HH:mm}", bodyFont, brush, 32, 64);
         graphics.DrawString($"Arama: {collection.Criteria.PickupLocation}, {collection.Criteria.PickupAt:dd.MM.yyyy HH:mm} – {collection.Criteria.ReturnAt:dd.MM.yyyy HH:mm}", bodyFont, brush, 32, 88);
+        graphics.DrawString($"Filtreler: Yakıt {collection.Criteria.FuelFilter}; Vites {collection.Criteria.TransmissionFilter}", bodyFont, brush, 32, 112);
 
         var headers = new[] { "Model", "Kiralama şirketi", "Vites", "Yakıt", "Fiyat" };
         var xs = new[] { 32, 340, 610, 800, 970 };
         for (var i = 0; i < collection.Cars.Count; i++)
         {
-            var y = 140 + (i % 25) * 34 + (i / 25) * PageHeight;
+            var y = 164 + (i % 25) * 34 + (i / 25) * PageHeight;
             if (i % 25 == 0)
             {
                 for (var h = 0; h < headers.Length; h++) graphics.DrawString(headers[h], headerFont, brush, xs[h], y);

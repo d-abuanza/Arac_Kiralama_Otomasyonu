@@ -2,6 +2,9 @@ namespace CarRentalAutomation.Core;
 
 public sealed record SearchCriteria(string PickupLocation, DateTime PickupAt, DateTime ReturnAt)
 {
+    public string FuelFilter { get; init; } = "Tümü";
+    public string TransmissionFilter { get; init; } = "Tümü";
+
     public void Validate()
     {
         if (string.IsNullOrWhiteSpace(PickupLocation)) throw new ArgumentException("Alış lokasyonu zorunludur.");
@@ -54,7 +57,7 @@ public interface IDatabaseConnectionCheck
 
 public enum Yolcu360SessionState
 {
-    Initializing, LoadingLoginPage, WaitingForPhoneField, SubmittingPhone,
+    Initializing, CheckingSession, LoadingLoginPage, WaitingForPhoneField, SubmittingPhone,
     WaitingForSecurityChallenge, WaitingForOtp, VerifyingOtp, Authenticated,
     Searching, ExtractingResults, AuthenticationFailed, SearchFailed, Cancelled
 }

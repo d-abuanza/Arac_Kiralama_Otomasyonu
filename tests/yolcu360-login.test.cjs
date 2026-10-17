@@ -103,18 +103,87 @@ test('production JavaScript parses; a homepage redirect alone is not authenticat
     assert.equal(f.run({ action: 'state' }).state, 'unknown');
 });
 
-test('generic, foreign-origin, hidden account links cannot report authenticated', () => {
-    for (const opts of [{ marker: false }, { href: 'https://unrelated.invalid/account' }, { hidden: true }]) {
+test('generic, foreign-origin and nonaccount paths cannot report authenticated', () => {
+    for (const opts of [{ marker: false }, { href: 'https://unrelated.invalid/account' }, { href: '/unrelated/account' }]) {
         const f = fixture('https://yolcu360.com/'); account(f, opts);
         assert.notEqual(f.run({ action: 'state' }).state, 'authenticated');
     }
 });
 
-test('visible same-origin authenticated marker is required and recognized', () => {
+test('same-origin conditional account marker is recognized and login route stays unauthenticated', () => {
     const f = fixture('https://yolcu360.com/'); account(f);
     assert.equal(f.run({ action: 'state' }).state, 'authenticated');
     const login = fixture(); account(login);
     assert.notEqual(login.run({ action: 'state' }).state, 'authenticated');
+});
+
+test('conditional account marker in a collapsed responsive menu authenticates without opening the menu', () => {
+    const f = fixture('https://yolcu360.com/');
+    const menu = f.make('div', { id: 'headerMenuButton' });
+    const collapsed = f.make('div'); collapsed.style.display = 'none';
+    const link = f.make('a', { href: '/account' }).append(f.make('span', { class: 'logged-user' }));
+    collapsed.append(link); f.body.append(menu, collapsed);
+    for (let check = 0; check < 3; check++) assert.equal(f.run({ action: 'state' }).state, 'authenticated');
+    assert.equal(menu.clicks, 0); assert.equal(link.clicks, 0);
+    assert.equal(f.document.hit, null);
+});
+
+test('loading document cannot authenticate even when previous account markup is present', () => {
+    const f = fixture('https://yolcu360.com/'); account(f);
+    for (const readyState of ['loading', 'interactive']) {
+        f.document.readyState = readyState;
+        assert.equal(f.run({ action: 'state' }).state, 'loading');
+    }
+    f.document.readyState = 'complete'; assert.equal(f.run({ action: 'state' }).state, 'authenticated');
+});
+
+test('server-rendered account markup cannot authenticate until Nuxt hydration has completed', () => {
+    const f = fixture('https://yolcu360.com/'); account(f);
+    const root = f.make('div', { id: '__nuxt' }); f.body.append(root);
+    assert.equal(f.run({ action: 'state' }).state, 'loading');
+    root.__vue_app__ = { $nuxt: { isHydrating: true } };
+    assert.equal(f.run({ action: 'state' }).state, 'loading');
+    root.__vue_app__.$nuxt.isHydrating = false;
+    assert.equal(f.run({ action: 'state' }).state, 'authenticated');
+});
+
+test('hydrated guest marker reports signed out without clicking login or country controls', () => {
+    const f = fixture('https://yolcu360.com/');
+    const root = f.make('div', { id: '__nuxt' });
+    root.__vue_app__ = { config: { globalProperties: { $nuxt: { isHydrating: true } } } };
+    const guest = f.make('button', { class: 'header-login' }, 'Giriş yap');
+    f.body.append(root, guest);
+    assert.equal(f.run({ action: 'state' }).state, 'loading');
+    root.__vue_app__.config.globalProperties.$nuxt.isHydrating = false;
+    assert.equal(f.run({ action: 'state' }).state, 'signed-out');
+    assert.equal(guest.clicks, 0); assert.equal(f.document.hit, null);
+});
+
+test('session detection never fills a phone field or submits a retained phone form', () => {
+    const f = fixture(), form = phoneForm(f, 'TR +90');
+    form.phone.value = '5551234567';
+    for (let check = 0; check < 3; check++) assert.equal(f.run({ action: 'state', phase: 'ready', phone: '5559999999' }).state, 'phone');
+    assert.equal(form.phone.value, '5551234567'); assert.equal(form.phone.events.length, 0);
+    assert.equal(form.button.clicks, 0); assert.equal(form.summary.clicks, 0);
+});
+
+test('session checks retain pending OTP without clearing, typing or verifying it', () => {
+    const f = fixture(), otp = f.make('input', { id: 'sms_input' }); otp.value = '123456';
+    const submit = f.make('button', { 'data-cms-key': 'button_apply' }, 'Doğrula'); f.body.append(otp, submit);
+    account(f); // Stale header markup must not override an active OTP form.
+    for (let check = 0; check < 3; check++) assert.equal(f.run({ action: 'state', phase: 'ready' }).state, 'otp');
+    assert.equal(otp.value, '123456'); assert.equal(otp.events.length, 0); assert.equal(submit.clicks, 0);
+});
+
+test('interactive challenge takes priority over conditional account markup and resumes after it closes', () => {
+    const f = fixture('https://yolcu360.com/'); account(f);
+    const root = f.make('div', { id: '__nuxt' }); root.__vue_app__ = { $nuxt: { isHydrating: true } }; f.body.append(root);
+    const challenge = f.make('form', { id: 'challenge-form' }); f.body.append(challenge);
+    assert.equal(f.run({ action: 'state' }).state, 'challenge'); assert.equal(challenge.clicks, 0);
+    challenge.hidden = true;
+    assert.equal(f.run({ action: 'state' }).state, 'loading');
+    root.__vue_app__.$nuxt.isHydrating = false;
+    assert.equal(f.run({ action: 'state' }).state, 'authenticated'); assert.equal(challenge.clicks, 0);
 });
 
 test('unexpected origins cannot fill phone or OTP', () => {

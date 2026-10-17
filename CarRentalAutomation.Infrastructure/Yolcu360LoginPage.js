@@ -23,6 +23,8 @@
     const phone = () => {
         const exact = document.querySelector('input#phn-input');
         if (enabled(exact)) return exact;
+        // Account profile pages also contain a telephone input; it is not a login form.
+        if (!/^\/login\/?$/.test(location.pathname)) return null;
         const alternatives = [...document.querySelectorAll('input[type=tel],input[autocomplete=tel]')].filter(enabled);
         return alternatives.length === 1 ? alternatives[0] : null;
     };
@@ -57,16 +59,16 @@
     const authenticated = () => {
         if (/\/login\/?$/.test(location.pathname) || phone() || otpFields().length) return false;
         // These exact header nodes are rendered only for a nonanonymous user.
-        const accounts = [...document.querySelectorAll('a[href]')].filter(a => new URL(a.href, location.href).origin === location.origin
-            && /\/account\/?$/.test(new URL(a.href, location.href).pathname) && a.querySelector('.header-user-icon-wrap,.logged-user'));
-        if (accounts.some(a => visible(a))) return true;
-        // At this viewport the responsive account link is inside the normal header menu.
-        const menu = document.querySelector('#headerMenuButton');
-        if (interact(menu) && !window.__carRentalAccountMenuOpened) {
-            menu.click();
-            window.__carRentalAccountMenuOpened = true;
-        }
-        return false;
+        return [...document.querySelectorAll('a[href]')].some(a => a.isConnected && new URL(a.href, location.href).origin === location.origin
+            && /^\/account\/?$/.test(new URL(a.href, location.href).pathname) && a.querySelector('.header-user-icon-wrap,.logged-user'));
+    };
+    const initialized = () => {
+        if (document.readyState !== 'complete') return false;
+        const root = document.querySelector('#__nuxt');
+        if (!root) return true; // The site's standalone security/login documents need not use Nuxt.
+        const app = root.__vue_app__;
+        const nuxt = app?.$nuxt || app?.config?.globalProperties?.$nuxt;
+        return !!nuxt && nuxt.isHydrating === false;
     };
     const errorState = () => {
         const error = [...document.querySelectorAll('p[data-cms-key],[role=alert],[aria-live=assertive]')].find(e => visible(e)
@@ -88,6 +90,7 @@
     switch (request.action) {
         case 'state': {
             if (challenge()) return { state: 'challenge' };
+            if (!initialized()) return { state: 'loading' };
             if (authenticated()) return { state: 'authenticated' };
             if (visible(document.querySelector('[data-cms-key="text_restart_code"]'))) return { state: 'expired' };
             const error = errorState();
@@ -95,6 +98,7 @@
             if (otpFields().length) return { state: 'otp' };
             if (phone() && visible(countrySummary()) && document.readyState === 'complete') return { state: 'phone' };
             if (visible(document.querySelector('#register_firstName,#register_lastName,#register_email'))) return { state: 'registration' };
+            if (document.querySelector('.header-login')) return { state: 'signed-out' };
             return { state: document.readyState === 'complete' ? 'unknown' : 'loading' };
         }
         case 'open-country': {
