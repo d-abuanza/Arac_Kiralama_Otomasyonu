@@ -59,7 +59,7 @@ public sealed partial class MainForm
             if (car.Id <= 0)
             {
                 if (_criteria is null) throw new PaymentClientException("Önce geçerli bir araç araması yapın.");
-                var criteria = _criteria with { FuelFilter = _fuel.SelectedItem?.ToString() ?? "Tümü", TransmissionFilter = _transmission.SelectedItem?.ToString() ?? "Tümü" };
+                var criteria = CriteriaWithSelectedFilters(_criteria);
                 var collection = await _collections.SaveAsync(criteria.PickupLocation, criteria, [car], ct);
                 if (collection.Cars.Count != 1 || collection.Cars[0].Id <= 0) throw new PaymentClientException("Araç veritabanı kimliği alınamadı; ödeme başlatılmadı.");
                 ApplySavedIds([car], collection.Cars);
@@ -72,7 +72,7 @@ public sealed partial class MainForm
             string? phone = null;
             try { phone = await _siteCredentials.GetPhoneNumberAsync(_userId, ct); }
             catch (OperationCanceledException) { throw; }
-            catch (Exception) { /* The buyer can enter a phone; site login is not changed. */ }
+            catch (Exception) { }
             using var buyerDialog = new RentalBuyerDialog(booking.Model, booking.Amount, booking.Currency, phone);
             if (buyerDialog.ShowDialog(this) != DialogResult.OK || buyerDialog.Buyer is null)
             { _status.Text = $"Rezervasyon #{booking.Id} ödeme bekliyor. Ödeme formu başlatılmadı; aynı araçtan devam edebilirsiniz."; return; }

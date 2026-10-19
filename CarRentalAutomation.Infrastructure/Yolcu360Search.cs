@@ -13,7 +13,6 @@ public sealed partial class Yolcu360Browser
         SearchCriteria criteria, CancellationToken cancellationToken = default)
     {
         if (_shutdownRequested) return (new BrowserOperationResult(State, "Uygulama kapatılıyor."), []);
-        // A second caller must not queue a duplicate search behind the current operation.
         if (!await _operationLock.WaitAsync(0, cancellationToken))
             return (new BrowserOperationResult(State, "Bir işlem devam ediyor. Tamamlanmasını bekleyin."), []);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetimeCancellation.Token);
@@ -28,25 +27,7 @@ public sealed partial class Yolcu360Browser
             await InitializeAsync(token);
             var session = await CheckSessionCoreAsync(token);
             if (!session.Succeeded) return (session, []);
-            SetState(Yolcu360SessionState.Searching, "Yolcu360 arama formu hazırlanıyor...");
-            // Start from a fresh form in the same browser profile. Previous cards cannot satisfy this search.
-            await NavigateAsync("https://yolcu360.com/", token);
-            await SearchStepAsync("session", criteria, operation, ["authenticated"], token, TimeSpan.FromSeconds(12));
-            await SearchStepAsync("form-ready", criteria, operation, ["ready"], token);
-            SetState(Yolcu360SessionState.Searching, "Alış konumu sitedeki listeden seçiliyor...");
-            await SearchStepAsync("location-open", criteria, operation, ["location-open"], token);
-            await SearchStepAsync("location-type", criteria, operation, ["location-typed"], token);
-            await SearchStepAsync("location-select", criteria, operation, ["location-clicked","location-selected"], token);
-            await SearchStepAsync("location-check", criteria, operation, ["location-selected"], token);
-            SetState(Yolcu360SessionState.Searching, "Alış ve dönüş tarihleri takvimde seçiliyor...");
-            await SearchStepAsync("calendar-open", criteria, operation, ["calendar-open"], token);
-            await SearchStepAsync("calendar-pickup-day", criteria, operation, ["pickup-date-selected"], token);
-            await SearchStepAsync("calendar-return-day", criteria, operation, ["return-date-selected"], token);
-            await SearchStepAsync("calendar-check", criteria, operation, ["dates-verified"], token);
-            await SearchStepAsync("calendar-confirm", criteria, operation, ["dates-confirmed"], token);
-            await SearchStepAsync("pickup-time", criteria, operation, ["time-clicked","time-selected"], token);
-            await SearchStepAsync("return-time", criteria, operation, ["time-clicked","time-selected"], token);
-            await SearchStepAsync("form-check", criteria, operation, ["ready"], token);
+            await PrepareSearchFormAsync(criteria, operation, token);
 
             SetState(Yolcu360SessionState.Searching, "Konum ve tarih/saat doğrulandı. Arama gönderiliyor...");
             _searchResponseStatus = 0;
@@ -64,33 +45,9 @@ public sealed partial class Yolcu360Browser
             await ExpandSearchResultsAsync(criteria, operation, total, token);
             var extraction = await SearchDomAsync("extract", criteria, operation, token);
             ThrowSearchPageError(extraction);
-            var scrapedAt = DateTime.UtcNow;
-            var offers = new List<CarOffer>();
-            var seen = new HashSet<string>(StringComparer.Ordinal);
-            var skipped = 0;
-            foreach (var row in extraction.GetProperty("rows").EnumerateArray())
-            {
-                var priceText = row.GetProperty("price").GetString() ?? "";
-                var priceMatch = Regex.Match(priceText, @"(?:(?<amount>[\d.,]+)\s*(?<currency>₺|TRY|TL|EUR|€|USD|\$|GBP|£)|(?<currency>₺|TRY|TL|EUR|€|USD|\$|GBP|£)\s*(?<amount>[\d.,]+))", RegexOptions.IgnoreCase);
-                if (!priceMatch.Success || !TryParseLocalizedPrice(priceMatch.Groups["amount"].Value, out var price) || price <= 0)
-                { skipped++; continue; }
-                string Value(string name, string fallback) => row.GetProperty(name).GetString() is { Length: > 0 } value ? value : fallback;
-                var source = row.GetProperty("url").GetString();
-                if (!Uri.TryCreate(source, UriKind.Absolute, out var uri) || uri.Scheme != "https"
-                    || uri.Host is not ("yolcu360.com" or "www.yolcu360.com")) source = null;
-                var model = Value("model", "Model bilgisi okunamadı");
-                var company = Value("company", "Şirket bilgisi okunamadı");
-                var key = source ?? $"{model}|{company}|{priceText}|{Value("transmission", "")}|{Value("fuel", "")}";
-                if (!seen.Add(key)) continue;
-                offers.Add(new CarOffer(model, company, Value("transmission", "Bilinmiyor"), Value("fuel", "Bilinmiyor"),
-                    price, NormalizeCurrency(priceMatch.Groups["currency"].Value), source, false) { ScrapedAt = scrapedAt });
-            }
+            var offers = ReadOffers(extraction, out var skipped);
             if (offers.Count == 0) throw new InvalidOperationException("Sonuç kartları var ancak kira fiyatları okunamadı. Sayfa yapısı değişmiş olabilir.");
-            var completeness = total is { } expected
-                ? offers.Count < expected ? $" Sitedeki {expected} teklifin {offers.Count} adedi alındı; liste kısmen yüklendi." : $" Sitedeki {expected} teklif alındı."
-                : " Sitenin toplam teklif sayısı doğrulanamadı; yüklenen kartlar alındı.";
-            if (skipped > 0) completeness += $" Fiyatı okunamayan {skipped} kart atlandı.";
-            return (SetState(Yolcu360SessionState.Authenticated, $"{offers.Count} canlı teklif. Fiyatlar seçilen sürenin toplam kira bedelidir.{completeness}", true), offers);
+            return (SetState(Yolcu360SessionState.Authenticated, DescribeSearchResults(offers.Count, total, skipped), true), offers);
         }
         catch (SearchLoginRequiredException)
         { return (SetState(Yolcu360SessionState.AuthenticationFailed, "Yolcu360 oturumu doğrulanamadı veya sona erdi. Giriş işlemini başlat'a tıklayın."), []); }
@@ -103,6 +60,64 @@ public sealed partial class Yolcu360Browser
         finally { _operationLock.Release(); }
     }
 
+    private async Task PrepareSearchFormAsync(SearchCriteria criteria, string operation, CancellationToken token)
+    {
+        SetState(Yolcu360SessionState.Searching, "Yolcu360 arama formu hazırlanıyor...");
+        await NavigateAsync("https://yolcu360.com/", token);
+        await SearchStepAsync("session", criteria, operation, ["authenticated"], token, TimeSpan.FromSeconds(12));
+        await SearchStepAsync("form-ready", criteria, operation, ["ready"], token);
+        SetState(Yolcu360SessionState.Searching, "Alış konumu sitedeki listeden seçiliyor...");
+        await SearchStepAsync("location-open", criteria, operation, ["location-open"], token);
+        await SearchStepAsync("location-type", criteria, operation, ["location-typed"], token);
+        await SearchStepAsync("location-select", criteria, operation, ["location-clicked", "location-selected"], token);
+        await SearchStepAsync("location-check", criteria, operation, ["location-selected"], token);
+        SetState(Yolcu360SessionState.Searching, "Alış ve dönüş tarihleri takvimde seçiliyor...");
+        await SearchStepAsync("calendar-open", criteria, operation, ["calendar-open"], token);
+        await SearchStepAsync("calendar-pickup-day", criteria, operation, ["pickup-date-selected"], token);
+        await SearchStepAsync("calendar-return-day", criteria, operation, ["return-date-selected"], token);
+        await SearchStepAsync("calendar-check", criteria, operation, ["dates-verified"], token);
+        await SearchStepAsync("calendar-confirm", criteria, operation, ["dates-confirmed"], token);
+        await SearchStepAsync("pickup-time", criteria, operation, ["time-clicked", "time-selected"], token);
+        await SearchStepAsync("return-time", criteria, operation, ["time-clicked", "time-selected"], token);
+        await SearchStepAsync("form-check", criteria, operation, ["ready"], token);
+    }
+
+    private static IReadOnlyList<CarOffer> ReadOffers(JsonElement extraction, out int skipped)
+    {
+        var scrapedAt = DateTime.UtcNow;
+        var offers = new List<CarOffer>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        skipped = 0;
+        foreach (var row in extraction.GetProperty("rows").EnumerateArray())
+        {
+            var priceText = row.GetProperty("price").GetString() ?? "";
+            var priceMatch = Regex.Match(priceText, @"(?:(?<amount>[\d.,]+)\s*(?<currency>₺|TRY|TL|EUR|€|USD|\$|GBP|£)|(?<currency>₺|TRY|TL|EUR|€|USD|\$|GBP|£)\s*(?<amount>[\d.,]+))", RegexOptions.IgnoreCase);
+            if (!priceMatch.Success || !TryParseLocalizedPrice(priceMatch.Groups["amount"].Value, out var price) || price <= 0)
+            { skipped++; continue; }
+            string Value(string name, string fallback) => row.GetProperty(name).GetString() is { Length: > 0 } value ? value : fallback;
+            var source = row.GetProperty("url").GetString();
+            if (!Uri.TryCreate(source, UriKind.Absolute, out var uri) || uri.Scheme != "https"
+                || uri.Host is not ("yolcu360.com" or "www.yolcu360.com")) source = null;
+            var model = Value("model", "Model bilgisi okunamadı");
+            var company = Value("company", "Şirket bilgisi okunamadı");
+            var key = source ?? $"{model}|{company}|{priceText}|{Value("transmission", "")}|{Value("fuel", "")}";
+            if (!seen.Add(key)) continue;
+            offers.Add(new CarOffer(model, company, Value("transmission", "Bilinmiyor"), Value("fuel", "Bilinmiyor"),
+                price, NormalizeCurrency(priceMatch.Groups["currency"].Value), source, false)
+            { ScrapedAt = scrapedAt });
+        }
+        return offers;
+    }
+
+    private static string DescribeSearchResults(int offerCount, int? total, int skipped)
+    {
+        var completeness = total is { } expected
+            ? offerCount < expected ? $" Sitedeki {expected} teklifin {offerCount} adedi alındı; liste kısmen yüklendi." : $" Sitedeki {expected} teklif alındı."
+            : " Sitenin toplam teklif sayısı doğrulanamadı; yüklenen kartlar alındı.";
+        if (skipped > 0) completeness += $" Fiyatı okunamayan {skipped} kart atlandı.";
+        return $"{offerCount} canlı teklif. Fiyatlar seçilen sürenin toplam kira bedelidir.{completeness}";
+    }
+
     private async Task<JsonElement> SearchDomAsync(string action, SearchCriteria criteria, string operation, CancellationToken token)
     {
         if (_navigationError is { } error) throw new IOException("Yolcu360 sayfası yüklenemedi (" + error + ").");
@@ -111,7 +126,6 @@ public sealed partial class Yolcu360Browser
             var result = await EvaluateJsonAsync(Yolcu360SearchScript.Create(action, criteria, operation), token);
             if (result.GetProperty("state").GetString() != "challenge") return result;
             await ResolveHumanVerificationAsync(token);
-            // The script's challenge guard precedes every mutation. Resume this step without restarting the search.
         }
     }
 

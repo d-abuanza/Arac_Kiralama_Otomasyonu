@@ -33,11 +33,17 @@ internal sealed class RentalCheckoutForm : Form
         Text = "iyzico Sandbox — ödeme";
         Width = 1080; Height = 830; StartPosition = FormStartPosition.CenterParent;
         Font = new Font("Segoe UI", 10);
-        _view = new WebView2 { Dock = DockStyle.Fill, Name = "sandboxCheckoutBrowser", CreationProperties = new CoreWebView2CreationProperties
+        _view = new WebView2
         {
-            UserDataFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CarRentalAutomation", "Payments", "Browser"),
-            ProfileName = "Sandbox" + Guid.NewGuid().ToString("N"), IsInPrivateModeEnabled = true
-        } };
+            Dock = DockStyle.Fill,
+            Name = "sandboxCheckoutBrowser",
+            CreationProperties = new CoreWebView2CreationProperties
+            {
+                UserDataFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CarRentalAutomation", "Payments", "Browser"),
+                ProfileName = "Sandbox" + Guid.NewGuid().ToString("N"),
+                IsInPrivateModeEnabled = true
+            }
+        };
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3 };
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         var actions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, Padding = new Padding(8) };
@@ -160,31 +166,38 @@ internal sealed class RentalCheckoutForm : Form
             if (Uri.TryCreate(core.Source, UriKind.Absolute, out var uri) && uri.AbsolutePath == "/api/payments/iyzico/callback")
                 await RefreshAsync(verify: true);
         };
-        core.NewWindowRequested += async (_, args) =>
+        core.NewWindowRequested += async (_, args) => await OpenCheckoutPopupAsync(args);
+    }
+
+    private async Task OpenCheckoutPopupAsync(CoreWebView2NewWindowRequestedEventArgs args)
+    {
+        args.Handled = true;
+        if (_closing || !SafeNavigation(args.Uri)) return;
+        using var deferral = args.GetDeferral();
+        Form? popup = null;
+        try
         {
-            args.Handled = true;
-            if (_closing || !SafeNavigation(args.Uri)) return;
-            using var deferral = args.GetDeferral();
-            Form? popup = null;
-            try
+            popup = new Form { Text = "Sandbox banka / 3D Secure doğrulaması", Width = 820, Height = 720, StartPosition = FormStartPosition.CenterParent };
+            var popupView = new WebView2
             {
-                popup = new Form { Text = "Sandbox banka / 3D Secure doğrulaması", Width = 820, Height = 720, StartPosition = FormStartPosition.CenterParent };
-                var popupView = new WebView2 { Dock = DockStyle.Fill, CreationProperties = new CoreWebView2CreationProperties
+                Dock = DockStyle.Fill,
+                CreationProperties = new CoreWebView2CreationProperties
                 {
                     UserDataFolder = _view.CreationProperties.UserDataFolder,
-                    ProfileName = _view.CreationProperties.ProfileName, IsInPrivateModeEnabled = true
-                } };
-                popup.Controls.Add(popupView); _popups.Add(popup); popup.Show(this);
-                await popupView.EnsureCoreWebView2Async(_view.CoreWebView2.Environment);
-                if (_closing || popup.IsDisposed) return;
-                ConfigureBrowser(popupView);
-                args.NewWindow = popupView.CoreWebView2;
-                popupView.CoreWebView2.WindowCloseRequested += (_, _) => popup.Close();
-                popup.FormClosed += async (_, _) => { _popups.Remove(popup); if (!_closing) await RefreshAsync(verify: true); };
-            }
-            catch (Exception)
-            { popup?.Dispose(); if (!_closing) { LastError = "Banka doğrulama penceresi açılamadı. Ödeme sonucunu kontrol edin."; ShowState(); } }
-        };
+                    ProfileName = _view.CreationProperties.ProfileName,
+                    IsInPrivateModeEnabled = true
+                }
+            };
+            popup.Controls.Add(popupView); _popups.Add(popup); popup.Show(this);
+            await popupView.EnsureCoreWebView2Async(_view.CoreWebView2.Environment);
+            if (_closing || popup.IsDisposed) return;
+            ConfigureBrowser(popupView);
+            args.NewWindow = popupView.CoreWebView2;
+            popupView.CoreWebView2.WindowCloseRequested += (_, _) => popup.Close();
+            popup.FormClosed += async (_, _) => { _popups.Remove(popup); if (!_closing) await RefreshAsync(verify: true); };
+        }
+        catch (Exception)
+        { popup?.Dispose(); if (!_closing) { LastError = "Banka doğrulama penceresi açılamadı. Ödeme sonucunu kontrol edin."; ShowState(); } }
     }
 
     private async Task RefreshAsync(bool verify)

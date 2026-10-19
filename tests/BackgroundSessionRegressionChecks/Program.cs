@@ -58,7 +58,6 @@ internal static class Program
                 var browserProcess = core.BrowserProcessId;
                 var processFailures = 0;
                 core.ProcessFailed += (_, _) => processFailures++;
-                // The fixture is an about:blank document. Block any remote resource request explicitly.
                 core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
                 core.WebResourceRequested += (_, e) =>
                 {
@@ -93,7 +92,7 @@ internal static class Program
                 Check(view.CoreWebView2.BrowserProcessId == browserProcess && Descendants(host).OfType<WebView2>().Count() == 1 && !Descendants(owner).OfType<WebView2>().Any(), "Transitions must not create or reparent a second browser.");
 
                 host.ShowVerification();
-                host.Close(); // Simulates the ordinary verification-window X button.
+                host.Close();
                 Check(cancellations == 1 && !host.IsDisposed && !view.IsDisposed && !host.IsShowingVerification, "User close must signal cancellation and retain the browser.");
                 Check(!host.Bounds.IntersectsWith(SystemInformation.VirtualScreen) && (await SnapshotAsync(core, timeout.Token)).Retained, "Cancellation must park a still functioning browser.");
                 Check(processFailures == 0, "No browser process may fail during host transitions.");

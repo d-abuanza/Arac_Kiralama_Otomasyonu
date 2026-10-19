@@ -68,6 +68,10 @@ internal static class Program
         pickup.RestoreSavedLocation("");
         Check(pickup.SelectedIndex == -1, "empty saved location does not select an unrelated default");
         using var paymentsPage = new PaymentsPage(new FakeApi());
+        var paymentStatus = Descendants(paymentsPage).OfType<ComboBox>().Single(control => control.Name == "cmbPaymentStatus");
+        Check(paymentStatus.DropDownStyle == ComboBoxStyle.DropDownList && paymentStatus.Items.Count == 10,
+            "payment status exposes the existing ten fixed choices");
+        Check(paymentStatus.SelectedItem?.ToString() == "Tümü", "payment history starts with the all-status filter");
         var paymentGrid = Descendants(paymentsPage).OfType<DataGridView>().Single();
         Check(paymentGrid.Columns.Count == 10 && !paymentGrid.AutoGenerateColumns && paymentGrid.ReadOnly, "payment history exposes only ten explicit read-only columns");
         Check(!paymentGrid.Columns.Cast<DataGridViewColumn>().Any(column => column.DataPropertyName.Contains("Token") || column.DataPropertyName.Contains("Checkout")), "history has no checkout tokens or URLs");
@@ -98,6 +102,7 @@ internal static class Program
     private static async Task RunAsync()
     {
         const string credential = "synthetic-client-credential-with-more-than-32-characters";
+        await CheckHistoryFilteringAsync(credential);
         var requestId = Guid.NewGuid();
         var httpRequests = 0;
         using (var api = new PaymentApiClient("http://127.0.0.1:5158", new HttpClient(new Handler(async request =>
@@ -192,6 +197,32 @@ internal static class Program
         public Task<RentalAttempt?> ReadAsync(long carId, CancellationToken ct) => Task.FromResult(Attempt);
         public Task SaveAsync(RentalAttempt attempt, CancellationToken ct) { Attempt = attempt; return Task.CompletedTask; }
     }
+    private static async Task CheckHistoryFilteringAsync(string credential)
+    {
+        using (var api = new PaymentApiClient("http://localhost:5158", new HttpClient(new Handler(request =>
+        {
+            Check(request.RequestUri!.Query == "?offset=0&limit=100&status=Succeeded", "history forwards status and clamps offset before requesting a page");
+            return Task.FromResult(Response(new[] { Payment(1) with { Status = "Succeeded" } }));
+        })), _ => Task.FromResult<string?>(credential)))
+        {
+            var records = await api.HistoryAsync(-5, default, "Succeeded");
+            Check(records.Count == 1 && records[0].Status == "Succeeded", "matching history response is preserved");
+        }
+
+        using (var api = new PaymentApiClient("http://localhost:5158", new HttpClient(new Handler(_ =>
+            Task.FromResult(Response(new[] { Payment(1) with { Status = "Succeeded" } })))), _ => Task.FromResult<string?>(credential)))
+        {
+            try { await api.HistoryAsync(0, default, "Cancelled"); Check(false, "mismatched history status accepted"); }
+            catch (PaymentClientException exception) { Check(!exception.Message.Contains(credential), "old backend filter mismatch is rejected without exposing credentials"); }
+        }
+
+        using (var api = new PaymentApiClient("http://localhost:5158", new HttpClient(new Handler(_ =>
+            Task.FromResult(Response(Array.Empty<RentalPayment>())))), _ => Task.FromResult<string?>(credential)))
+        {
+            Check((await api.HistoryAsync(0, default, "Cancelled")).Count == 0, "empty filtered history remains empty");
+        }
+    }
+
     private sealed class FakeApi : IRentalPaymentApi
     {
         internal Dictionary<Guid, RentalBooking> Bookings = [];

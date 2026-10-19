@@ -6,6 +6,7 @@
     <UserSecretsId>CarRentalAutomation.Payments.Development</UserSecretsId>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../Shared/IyzicoAuthorization.cs" Link="Shared/IyzicoAuthorization.cs" />
     <PackageReference Include="MySqlConnector" Version="2.4.0" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
     <InternalsVisibleTo Include="PaymentBackendChecks" />

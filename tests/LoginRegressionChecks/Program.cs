@@ -1,7 +1,6 @@
 using System.Reflection;
 using CarRentalAutomation.Infrastructure;
 
-// These are synthetic numbers. No browser, database, network, or SMS is used.
 var method = typeof(Yolcu360Browser).GetMethod("NormalizeTurkishPhoneNumber", BindingFlags.Static | BindingFlags.NonPublic)
     ?? throw new InvalidOperationException("Production phone normalizer was not found.");
 var valid = new[]

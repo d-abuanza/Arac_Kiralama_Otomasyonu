@@ -1,4 +1,3 @@
-; Compile through scripts/Build-Installer.ps1 using Inno Setup 6.3 or newer.
 #ifndef PublishDir
   #error PublishDir must point to the staged application folder
 #endif

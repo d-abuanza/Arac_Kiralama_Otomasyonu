@@ -4,7 +4,6 @@ using Microsoft.Extensions.Configuration;
 
 namespace CarRentalAutomation.SandboxSetup;
 
-// Server setup tooling only. The rental desktop application must not reference this project.
 internal sealed class SandboxCredentials(string apiKey, string secretKey)
 {
     internal string ApiKey { get; } = apiKey;
@@ -93,8 +92,11 @@ internal static class SandboxConfiguration
         // Use the supported Secret Manager CLI; never place values in command arguments or a repo file.
         var start = new ProcessStartInfo("dotnet")
         {
-            UseShellExecute = false, CreateNoWindow = true,
-            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
         };
         foreach (var argument in new[] { "user-secrets", "set", "--id", userSecretsId }) start.ArgumentList.Add(argument);
         using var process = new Process { StartInfo = start };
@@ -105,7 +107,6 @@ internal static class SandboxConfiguration
             started = true;
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(20));
-            // Discard CLI output. An unexpected CLI error must not echo its input into our logs.
             var output = process.StandardOutput.ReadToEndAsync(timeout.Token);
             var errors = process.StandardError.ReadToEndAsync(timeout.Token);
             var payload = JsonSerializer.Serialize(new Dictionary<string, string>

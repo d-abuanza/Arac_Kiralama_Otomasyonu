@@ -1,6 +1,5 @@
 namespace CarRentalAutomation.Core;
 
-/// <summary>The app label is persisted unchanged; the query and accepted page names are only for website selection.</summary>
 public sealed record PickupLocationOption(string DisplayName, string SearchText, IReadOnlyList<string> WebsiteNames, string City)
 {
     public override string ToString() => DisplayName;
@@ -21,7 +20,6 @@ public static class PickupLocations
         Location("İzmir - Alsancak", "Alsancak", "İzmir")
     });
 
-    // Saved collections outside the catalog remain valid; callers keep their original string when no mapping exists.
     public static PickupLocationOption? Find(string? displayName) =>
         Options.FirstOrDefault(option => string.Equals(option.DisplayName, displayName, StringComparison.Ordinal));
 

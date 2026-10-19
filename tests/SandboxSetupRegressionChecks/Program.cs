@@ -68,8 +68,6 @@ internal static class Program
                 fields[1].Text = Secret;
                 Check(fields[0].Text == Api && fields[1].Text == Secret, "synthetic credentials remain distinct and unmodified");
 
-                // Raise lifecycle events directly; do not show the window, submit,
-                // touch the user's clipboard, save settings or contact the provider.
                 typeof(Form).GetMethod("OnFormClosing", BindingFlags.NonPublic | BindingFlags.Instance)!
                     .Invoke(dialog, [new FormClosingEventArgs(CloseReason.UserClosing, false)]);
                 typeof(Form).GetMethod("OnFormClosed", BindingFlags.NonPublic | BindingFlags.Instance)!
@@ -265,7 +263,6 @@ internal static class Program
     {
         const string nonce = "0123456789abcdef0123456789abcdef";
         const string body = "{\"locale\":\"tr\",\"conversationId\":\"synthetic-vector\",\"binNumber\":\"55260800\"}";
-        // Independently generated with Python's hmac/hashlib SHA-256 implementation.
         const string expectedSignature = "8c361be6949abd01b4815f134348993002abc3b52491e88220c68efac1cf10ea";
         const string expectedHeader = "IYZWSv2 YXBpS2V5OnNhbmRib3gtc3ludGhldGljLWFwaS1rZXkmcmFuZG9tS2V5OjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmJnNpZ25hdHVyZTo4YzM2MWJlNjk0OWFiZDAxYjQ4MTVmMTM0MzQ4OTkzMDAyYWJjM2I1MjQ5MWU4ODIyMGM2OGVmYWMxY2YxMGVh";
         var actual = SandboxAuthenticationProbe.CreateAuthorization(Credentials, nonce, body);

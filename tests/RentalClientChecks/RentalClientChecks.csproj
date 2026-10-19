@@ -10,5 +10,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../CarRentalAutomation.WinForms/CarRentalAutomation.WinForms.csproj" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
   </ItemGroup>
 </Project>

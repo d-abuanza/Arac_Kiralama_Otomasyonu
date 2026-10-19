@@ -23,7 +23,6 @@ internal sealed class BackgroundBrowserHost : Form
         if (browser.Parent is not null) throw new InvalidOperationException("The shared browser already has a host.");
         Name = "backgroundBrowserHost";
         Text = "Yolcu360 güvenlik doğrulaması";
-        // Keep these styles fixed: changing them can recreate the native parent of WebView2.
         FormBorderStyle = FormBorderStyle.SizableToolWindow;
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.Manual;
@@ -52,7 +51,6 @@ internal sealed class BackgroundBrowserHost : Form
         if (Owner is not null && Owner != owner) throw new InvalidOperationException("The browser owner cannot be changed.");
         PlaceOutsideDesktop();
         if (!Visible) Show(owner);
-        // Windows may apply initial placement/DPI adjustments during Show. Check the final bounds too.
         PlaceOutsideDesktop();
     }
 

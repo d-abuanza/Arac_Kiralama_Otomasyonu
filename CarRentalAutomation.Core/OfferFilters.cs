@@ -4,7 +4,6 @@ using System.Text.RegularExpressions;
 
 namespace CarRentalAutomation.Core;
 
-/// <summary>Matches the Turkish and English fuel/transmission names returned by rental suppliers.</summary>
 public static class OfferFilters
 {
     public static IReadOnlyList<CarOffer> Apply(IEnumerable<CarOffer> offers, string? fuel, string? transmission)

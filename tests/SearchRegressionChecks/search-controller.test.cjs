@@ -4,8 +4,6 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-// Run the actual production controller against small synthetic DOM fixtures.
-// No page, account, network, API or database is accessed. This is not a browser substitute.
 const source = fs.readFileSync(path.join(__dirname, '../../CarRentalAutomation.Infrastructure/Yolcu360SearchPage.js'), 'utf8');
 function fixture(url = 'https://yolcu360.com/arac-kiralama/search') {
     const location = new URL(url);

@@ -14,7 +14,6 @@ if (args.Length == 1 && args[0] == "--configure-local")
 var builder = WebApplication.CreateBuilder(args);
 if (string.IsNullOrWhiteSpace(builder.Configuration["urls"])) builder.WebHost.UseUrls("http://127.0.0.1:5158");
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 32768);
-// Load the same ID used by Stage 1, automatically and only for local Development.
 if (builder.Environment.IsDevelopment()) builder.Configuration.AddUserSecrets<Program>(optional: true, reloadOnChange: false);
 builder.Configuration.AddEnvironmentVariables();
 builder.Logging.ClearProviders();
@@ -75,8 +74,13 @@ app.UseAuthorization();
 app.MapGet("/health", async (ServerConfiguration config, IPaymentRepository repository, CancellationToken ct) =>
 {
     var databaseReady = await repository.CheckSchemaAsync(ct);
-    return Results.Json(new { mode = "Sandbox", configured = config.IsConfigured, databaseReady,
-        missingConfiguration = config.Missing }, statusCode: config.IsConfigured && databaseReady ? 200 : 503);
+    return Results.Json(new
+    {
+        mode = "Sandbox",
+        configured = config.IsConfigured,
+        databaseReady,
+        missingConfiguration = config.Missing
+    }, statusCode: config.IsConfigured && databaseReady ? 200 : 503);
 });
 
 var api = app.MapGroup("/api").RequireAuthorization();

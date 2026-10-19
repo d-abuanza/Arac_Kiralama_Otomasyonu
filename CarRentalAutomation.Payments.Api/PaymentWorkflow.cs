@@ -18,7 +18,6 @@ internal sealed class PaymentWorkflow(IPaymentRepository repository, ICheckoutPr
         {
             var state = await provider.InitializeAsync(payment, request.Buyer, ip, ct);
             var encrypted = _protector.Protect(JsonSerializer.Serialize(state));
-            // Persist protected raw token and its lookup hash before returning any checkout URL.
             await repository.SaveCheckoutAsync(payment.Id, encrypted, ServerConfiguration.Hash(state.Token), state.ExpiresAt, ct);
             return Checkout(await repository.GetAsync(payment.Id, userId, ct));
         }

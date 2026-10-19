@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using CarRentalAutomation.Shared;
 
 namespace CarRentalAutomation.SandboxSetup;
 
@@ -18,13 +19,8 @@ internal sealed class SandboxAuthenticationProbe(HttpClient client)
         Timeout = TimeSpan.FromSeconds(20)
     };
 
-    internal static string CreateAuthorization(SandboxCredentials credentials, string nonce, string body)
-    {
-        var signature = Convert.ToHexString(HMACSHA256.HashData(Encoding.UTF8.GetBytes(credentials.SecretKey),
-            Encoding.UTF8.GetBytes(nonce + Path + body))).ToLowerInvariant();
-        var authorization = $"apiKey:{credentials.ApiKey}&randomKey:{nonce}&signature:{signature}";
-        return "IYZWSv2 " + Convert.ToBase64String(Encoding.UTF8.GetBytes(authorization));
-    }
+    internal static string CreateAuthorization(SandboxCredentials credentials, string nonce, string body) =>
+        IyzicoAuthorization.Create(credentials.ApiKey, credentials.SecretKey, nonce, Path, body);
 
     internal async Task<ProbeResult> CheckAsync(SandboxCredentials credentials, CancellationToken cancellationToken = default)
     {

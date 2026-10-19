@@ -20,7 +20,7 @@ internal static class Program
                 return dialog.Verified ? 0 : 2;
             }
             if (args.Length == 1 && args[0] == "--check")
-                return CheckAsync().GetAwaiter().GetResult(); // Console path only: there is no WinForms message loop here.
+                return CheckAsync().GetAwaiter().GetResult();
 
             Console.WriteLine("Stage 1 Sandbox setup: use --configure for local masked key entry, or --check to validate the saved server configuration. Never pass key values as command arguments.");
             return 2;

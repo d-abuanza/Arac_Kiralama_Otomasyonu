@@ -5,12 +5,22 @@ namespace CarRentalAutomation.WinForms;
 
 internal sealed class PaymentsPage : UserControl
 {
+    private const int PageSize = 100;
+    private const int MaximumOffset = 100000;
     private readonly IRentalPaymentApi? _api;
     private readonly CancellationTokenSource _lifetime = new();
-    private readonly DataGridView _grid = new() { Name = "gridPayments", Dock = DockStyle.Fill,
-        ReadOnly = true, AllowUserToAddRows = false, AllowUserToDeleteRows = false,
-        AutoGenerateColumns = false, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.DisplayedCells,
-        SelectionMode = DataGridViewSelectionMode.FullRowSelect, MultiSelect = false };
+    private readonly DataGridView _grid = new()
+    {
+        Name = "gridPayments",
+        Dock = DockStyle.Fill,
+        ReadOnly = true,
+        AllowUserToAddRows = false,
+        AllowUserToDeleteRows = false,
+        AutoGenerateColumns = false,
+        AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.DisplayedCells,
+        SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+        MultiSelect = false
+    };
     private readonly Label _status = new() { AutoSize = true, Padding = new Padding(8), Text = "Ödeme geçmişini görmek için Yenile düğmesine basın." };
     private readonly Button _refresh = new() { Text = "Yenile", AutoSize = true };
     private readonly Button _previous = new() { Text = "Önceki", AutoSize = true, Enabled = false };
@@ -29,6 +39,20 @@ internal sealed class PaymentsPage : UserControl
     {
         _api = api;
         Dock = DockStyle.Fill;
+        ConfigureGrid();
+        var toolbar = CreateToolbar();
+        _paymentStatus.SelectedIndexChanged += async (_, _) => { if (!_busy) await LoadAsync(0); };
+        Controls.Add(_grid);
+        Controls.Add(_status);
+        _status.Dock = DockStyle.Bottom;
+        Controls.Add(toolbar);
+        _refresh.Click += async (_, _) => await RefreshAsync();
+        _previous.Click += async (_, _) => await LoadAsync(Math.Max(0, _offset - PageSize));
+        _next.Click += async (_, _) => await LoadAsync(_offset + PageSize);
+    }
+
+    private void ConfigureGrid()
+    {
         AddColumn(nameof(PaymentRow.Id), "Ödeme No");
         AddColumn(nameof(PaymentRow.BookingId), "Rezervasyon No");
         AddColumn(nameof(PaymentRow.Model), "Araç Modeli");
@@ -39,6 +63,10 @@ internal sealed class PaymentsPage : UserControl
         AddColumn(nameof(PaymentRow.Kind), "İşlem Türü");
         AddColumn(nameof(PaymentRow.CreatedAt), "İşlem Tarihi", "dd.MM.yyyy HH:mm");
         AddColumn(nameof(PaymentRow.Reference), "İşlem Referansı");
+    }
+
+    private FlowLayoutPanel CreateToolbar()
+    {
         var toolbar = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(6) };
         _paymentStatus.Items.AddRange(new object[] {
             new StatusOption("", "Tümü"),
@@ -53,19 +81,16 @@ internal sealed class PaymentsPage : UserControl
             new StatusOption("SimulatedSuccess", "Eski simülasyon sonucu") });
         _paymentStatus.SelectedIndex = 0;
         toolbar.Controls.AddRange([new Label { Text = "Ödeme durumu", AutoSize = true, Padding = new Padding(0, 7, 0, 0) }, _paymentStatus, _refresh, _previous, _next]);
-        _paymentStatus.SelectedIndexChanged += async (_, _) => { if (!_busy) await LoadAsync(0); };
-        Controls.Add(_grid);
-        Controls.Add(_status);
-        _status.Dock = DockStyle.Bottom;
-        Controls.Add(toolbar);
-        _refresh.Click += async (_, _) => await RefreshAsync();
-        _previous.Click += async (_, _) => await LoadAsync(Math.Max(0, _offset - 100));
-        _next.Click += async (_, _) => await LoadAsync(_offset + 100);
+        return toolbar;
     }
 
     private void AddColumn(string property, string title, string? format = null) =>
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { DataPropertyName = property, HeaderText = title,
-            DefaultCellStyle = new DataGridViewCellStyle { Format = format ?? "" } });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            DataPropertyName = property,
+            HeaderText = title,
+            DefaultCellStyle = new DataGridViewCellStyle { Format = format ?? "" }
+        });
 
     public Task RefreshAsync() => LoadAsync(_offset);
 
@@ -81,14 +106,7 @@ internal sealed class PaymentsPage : UserControl
         {
             var records = await _api.HistoryAsync(offset, _lifetime.Token, filter.Value);
             if (IsDisposed || _lifetime.IsCancellationRequested) return;
-            // The API scopes records to its authenticated user; no client-side user ID is sent.
-            _grid.DataSource = records.Select(payment => new PaymentRow(payment)).ToList();
-            _offset = offset;
-            _count = records.Count;
-            _loadedStatus = filter.Value;
-            _status.Text = records.Count == 0
-                ? (offset == 0 ? $"{filter.Label}: Bu duruma uygun ödeme bulunmuyor." : "Bu sayfada başka ödeme yok. Önceki sayfaya dönebilirsiniz.")
-                : $"{filter.Label}: {offset + 1}–{offset + records.Count} arasındaki kayıtlar gösteriliyor. Her sayfada en fazla 100 ödeme.";
+            DisplayHistory(records, offset, filter);
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
         catch (PaymentClientException exception)
@@ -99,7 +117,6 @@ internal sealed class PaymentsPage : UserControl
         {
             if (!IsDisposed)
             {
-                // Restore the filter matching the displayed rows if the request failed.
                 _paymentStatus.SelectedItem = _paymentStatus.Items.Cast<StatusOption>().First(x => x.Value == _loadedStatus);
             }
             _busy = false;
@@ -107,12 +124,23 @@ internal sealed class PaymentsPage : UserControl
         }
     }
 
+    private void DisplayHistory(IReadOnlyList<RentalPayment> records, int offset, StatusOption filter)
+    {
+        _grid.DataSource = records.Select(payment => new PaymentRow(payment)).ToList();
+        _offset = offset;
+        _count = records.Count;
+        _loadedStatus = filter.Value;
+        _status.Text = records.Count == 0
+            ? (offset == 0 ? $"{filter.Label}: Bu duruma uygun ödeme bulunmuyor." : "Bu sayfada başka ödeme yok. Önceki sayfaya dönebilirsiniz.")
+            : $"{filter.Label}: {offset + 1}–{offset + records.Count} arasındaki kayıtlar gösteriliyor. Her sayfada en fazla {PageSize} ödeme.";
+    }
+
     private void UpdateButtons()
     {
         _refresh.Enabled = !_busy;
         _paymentStatus.Enabled = !_busy;
         _previous.Enabled = !_busy && _offset > 0;
-        _next.Enabled = !_busy && _count == 100 && _offset < 100000;
+        _next.Enabled = !_busy && _count == PageSize && _offset < MaximumOffset;
     }
 
     protected override void Dispose(bool disposing)

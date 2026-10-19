@@ -2,7 +2,6 @@ using CarRentalAutomation.Core;
 
 namespace CarRentalAutomation.WinForms;
 
-/// <summary>One selected string feeds search criteria; saved locations retain their original text.</summary>
 internal sealed class PickupLocationSelector : ComboBox
 {
     internal string? SelectedLocation => SelectedItem as string;
@@ -25,7 +24,6 @@ internal sealed class PickupLocationSelector : ComboBox
 
     internal void RestoreSavedLocation(string location)
     {
-        // Legacy values are data, not an invitation to silently substitute a different location.
         if (string.IsNullOrWhiteSpace(location)) { SelectedIndex = -1; return; }
         if (!Items.Contains(location)) Items.Add(location);
         SelectedItem = location;

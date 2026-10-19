@@ -4,7 +4,6 @@ using System.Text.Json;
 using CarRentalAutomation.Core;
 using CarRentalAutomation.Infrastructure;
 
-// Synthetic values only: no application window, database, browser or network.
 var checks = 0;
 var assembly = typeof(Yolcu360Browser).Assembly;
 var parse = typeof(Yolcu360Browser).GetMethod("TryParseLocalizedPrice", BindingFlags.Static | BindingFlags.NonPublic)
@@ -81,8 +80,6 @@ if (PickupLocations.Find("Ankara - Ankara Esenboğa Havalimanı")?.WebsiteNames.
     || PickupLocations.Find("Previously saved arbitrary location") is not null)
     throw new InvalidOperationException("Verified website aliases or saved legacy pickup compatibility changed.");
 checks++;
-// Parse and run the exact generated expression. A foreign origin must return before touching the DOM.
-// The deliberately hostile data must remain inert inside JSON, including newlines and script delimiters.
 using (var node = Process.Start(new ProcessStartInfo("node")
 {
     RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
@@ -103,4 +100,33 @@ var roundtrip = JsonSerializer.Deserialize<CarOffer>(JsonSerializer.Serialize(of
 if (roundtrip?.ScrapedAt != scrapedAt || roundtrip.ScrapedAt.Value.Kind != DateTimeKind.Utc || roundtrip.IsMockData)
     throw new InvalidOperationException("A live offer lost its UTC scrape timestamp during serialization.");
 checks++;
+var readOffers = typeof(Yolcu360Browser).GetMethod("ReadOffers", BindingFlags.Static | BindingFlags.NonPublic)
+    ?? throw new InvalidOperationException("Production offer mapper was not found.");
+using (var extraction = JsonDocument.Parse(JsonSerializer.Serialize(new
+{
+    rows = new[]
+    {
+        new { model = "Renault Clio", company = "Supplier", transmission = "Otomatik", fuel = "Benzin", price = "3.000,50 TRY", url = "https://yolcu360.com/arac-kiralama/detail/one" },
+        new { model = "Repeated", company = "Supplier", transmission = "Otomatik", fuel = "Benzin", price = "3.000,50 TRY", url = "https://yolcu360.com/arac-kiralama/detail/one" },
+        new { model = "Invalid", company = "Supplier", transmission = "Manuel", fuel = "Dizel", price = "unreadable", url = "" },
+        new { model = "", company = "", transmission = "", fuel = "", price = "EUR 1,234.56", url = "https://example.invalid/offer" }
+    }
+})))
+{
+    object?[] arguments = [extraction.RootElement, 0];
+    var mapped = readOffers.Invoke(null, arguments) as IReadOnlyList<CarOffer>
+        ?? throw new InvalidOperationException("Production mapper returned no collection.");
+    if (mapped.Count != 2 || (int)arguments[1]! != 1)
+        throw new InvalidOperationException("Offer deduplication or skipped-price count changed.");
+    checks++;
+    if (mapped[0].Model != "Renault Clio" || mapped[0].RentalCompany != "Supplier" || mapped[0].Price != 3000.50m || mapped[0].Currency != "TRY")
+        throw new InvalidOperationException("Production offer attributes changed during mapping.");
+    checks++;
+    if (mapped[1].Price != 1234.56m || mapped[1].Currency != "EUR" || mapped[1].SourceUrl is not null || mapped[1].Model != "Model bilgisi okunamadı" || mapped[1].FuelType != "Bilinmiyor")
+        throw new InvalidOperationException("Production offer fallback or source URL policy changed.");
+    checks++;
+    if (mapped.Any(item => item.IsMockData || item.ScrapedAt?.Kind != DateTimeKind.Utc) || mapped[0].ScrapedAt != mapped[1].ScrapedAt)
+        throw new InvalidOperationException("Mapped offers lost their shared live UTC timestamp.");
+    checks++;
+}
 Console.WriteLine($"Passed {checks} production search price/resource/serialization checks. No app, browser, database or network was used.");

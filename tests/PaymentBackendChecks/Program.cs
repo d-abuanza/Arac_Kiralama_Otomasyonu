@@ -22,7 +22,6 @@ var values = new Dictionary<string, string?>
     ["Payments:CallbackUrl"] = "https://callback.example.test/api/payments/iyzico/callback",
     ["Payments:Clients:0:UserId"] = "1", ["Payments:Clients:0:TokenHash"] = ServerConfiguration.Hash(access)
 };
-// This test runner uses synthetic configuration only. No User Secrets, real keys or database are read.
 var savedEnvironment = new Dictionary<string, string?>();
 foreach (var key in new[] { "IYZICO_SANDBOX_API_KEY", "IYZICO_SANDBOX_SECRET_KEY", "IYZICO_BASE_URL", "PAYMENTS_CALLBACK_URL", "CARRENTAL_CONNECTION_STRING" })
 {

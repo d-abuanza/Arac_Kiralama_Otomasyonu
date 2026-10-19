@@ -103,18 +103,8 @@ public sealed partial class Yolcu360Browser : IDisposable
             var phoneNumber = await phoneProvider(token);
             var nationalPhone = NormalizeTurkishPhoneNumber(phoneNumber ?? "");
 
-            SetState(Yolcu360SessionState.WaitingForPhoneField, "Ülke seçicisi açılıyor: Türkiye (+90)...");
-            await WaitForLoginActionAsync("open-country", s => s is "country-open" or "country-ready", "Sitedeki ülke seçicisi açılamadı.", token);
-            await WaitForLoginActionAsync("select-country", s => s == "country-ready", "TR +90 seçeneği seçilemedi veya seçili ülke doğrulanamadı.", token);
-            SetState(Yolcu360SessionState.SubmittingPhone, "Türkiye (+90) seçildi. MySQL telefon numarası forma yazılıyor...");
-            await WaitForLoginActionAsync("fill-phone", s => s == "phone-filled", "Telefon alanı görünür ve düzenlenebilir değil.", token, phone: nationalPhone);
-            await WaitForLoginActionAsync("check-phone", s => s == "phone-verified", "Formdaki telefon numarası veya +90 ülke kodu MySQL kaydıyla eşleşmiyor. Gönderim yapılmadı.", token, phone: nationalPhone);
-            // Read back again after a Vue render/mask update before clicking exactly once.
-            await Task.Delay(250, token);
-            if ((await LoginDomAsync("check-phone", token, phone: nationalPhone)).State != "phone-verified")
+            if (!await SubmitPhoneAsync(nationalPhone, token))
                 return FailAuth("Telefon numarası sayfanın maskelemesi sırasında değişti. Gönderim yapılmadı.");
-            SetState(Yolcu360SessionState.SubmittingPhone, "+90 ve telefon numarası doğrulandı. Devam Et düğmesine basılıyor...");
-            await WaitForLoginActionAsync("submit-phone", s => s == "phone-submitted", "Devam Et düğmesi etkin değil veya telefon formu değişti. SMS gönderimi doğrulanamadı.", token, phone: nationalPhone);
             var result = await WaitForLoginStageAsync("phone", s => s is "otp" or "authenticated", TimeSpan.FromSeconds(50), token);
             ThrowOnPageError(result, false);
             if (result.State == "authenticated") return await ValidateAuthenticatedSessionAsync(token);
@@ -125,6 +115,22 @@ public sealed partial class Yolcu360Browser : IDisposable
         catch (OperationCanceledException) { return SetState(Yolcu360SessionState.Cancelled, "Giriş işlemi iptal edildi."); }
         catch (Exception ex) { return FailAuth("Giriş tamamlanamadı: " + ex.Message); }
         finally { _operationLock.Release(); }
+    }
+
+    private async Task<bool> SubmitPhoneAsync(string nationalPhone, CancellationToken token)
+    {
+        SetState(Yolcu360SessionState.WaitingForPhoneField, "Ülke seçicisi açılıyor: Türkiye (+90)...");
+        await WaitForLoginActionAsync("open-country", s => s is "country-open" or "country-ready", "Sitedeki ülke seçicisi açılamadı.", token);
+        await WaitForLoginActionAsync("select-country", s => s == "country-ready", "TR +90 seçeneği seçilemedi veya seçili ülke doğrulanamadı.", token);
+        SetState(Yolcu360SessionState.SubmittingPhone, "Türkiye (+90) seçildi. MySQL telefon numarası forma yazılıyor...");
+        await WaitForLoginActionAsync("fill-phone", s => s == "phone-filled", "Telefon alanı görünür ve düzenlenebilir değil.", token, phone: nationalPhone);
+        await WaitForLoginActionAsync("check-phone", s => s == "phone-verified", "Formdaki telefon numarası veya +90 ülke kodu MySQL kaydıyla eşleşmiyor. Gönderim yapılmadı.", token, phone: nationalPhone);
+        await Task.Delay(250, token);
+        if ((await LoginDomAsync("check-phone", token, phone: nationalPhone)).State != "phone-verified")
+            return false;
+        SetState(Yolcu360SessionState.SubmittingPhone, "+90 ve telefon numarası doğrulandı. Devam Et düğmesine basılıyor...");
+        await WaitForLoginActionAsync("submit-phone", s => s == "phone-submitted", "Devam Et düğmesi etkin değil veya telefon formu değişti. SMS gönderimi doğrulanamadı.", token, phone: nationalPhone);
+        return true;
     }
 
     public async Task<BrowserOperationResult> VerifyOtpAsync(string otp, CancellationToken cancellationToken = default)
@@ -140,7 +146,6 @@ public sealed partial class Yolcu360Browser : IDisposable
             await InitializeAsync(token);
             SetState(Yolcu360SessionState.VerifyingOtp, "SMS kodu Yolcu360 doğrulama alanına aktarılıyor...");
             var before = await LoginDomAsync("state", token, phase: "verify");
-            // The site's OTP component retains an old rejection while a new request is pending.
             var priorErrorKey = before.State == "invalid" ? before.ErrorKey ?? "" : null;
             if (before.State != "invalid") ThrowOnPageError(before, true);
             if (before.State == "authenticated") return await ValidateAuthenticatedSessionAsync(token);
@@ -279,7 +284,6 @@ public sealed partial class Yolcu360Browser : IDisposable
         ulong? navigationId = null;
         void OnStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)
         {
-            // Ignore completion of a previous navigation that Navigate() has just cancelled.
             if (navigationId is null && e.Uri == url) navigationId = e.NavigationId;
             else if (navigationId is not null && Uri.TryCreate(e.Uri, UriKind.Absolute, out var next)
                 && next.Scheme == "https" && next.Host is "yolcu360.com" or "www.yolcu360.com") navigationId = e.NavigationId;
@@ -287,7 +291,6 @@ public sealed partial class Yolcu360Browser : IDisposable
         async void OnCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
         {
             if (e.NavigationId != navigationId) return;
-            // The authenticated login page can redirect immediately during hydration.
             if (!e.IsSuccess && e.WebErrorStatus == CoreWebView2WebErrorStatus.ConnectionAborted)
             {
                 await Task.Delay(250);
@@ -345,9 +348,6 @@ public sealed partial class Yolcu360Browser : IDisposable
         if (!root.TryGetProperty("value", out var value)) throw new InvalidOperationException("Sayfa betiği beklenen sonucu döndürmedi.");
         return value.Clone();
     }
-
-    private async Task<bool> EvalBoolAsync(string script, CancellationToken token) =>
-        (await EvaluateJsonAsync(script, token)).ValueKind == JsonValueKind.True;
 
     private async Task<string> EvalStringAsync(string script, CancellationToken token)
     {

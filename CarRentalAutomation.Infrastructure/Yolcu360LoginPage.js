@@ -1,6 +1,5 @@
 (request => {
     if (!['yolcu360.com', 'www.yolcu360.com'].includes(location.hostname) || location.protocol !== 'https:') return { state: 'unexpected-origin' };
-    // Selectors observed in the rendered Yolcu360 login page and its loaded Vue components.
     const normal = s => (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/ı/g, 'i').toLowerCase().replace(/\s+/g, ' ').trim();
     const digits = s => (s || '').replace(/\D/g, '');
     const visible = e => {
@@ -23,7 +22,6 @@
     const phone = () => {
         const exact = document.querySelector('input#phn-input');
         if (enabled(exact)) return exact;
-        // Account profile pages also contain a telephone input; it is not a login form.
         if (!/^\/login\/?$/.test(location.pathname)) return null;
         const alternatives = [...document.querySelectorAll('input[type=tel],input[autocomplete=tel]')].filter(enabled);
         return alternatives.length === 1 ? alternatives[0] : null;
@@ -58,7 +56,6 @@
         || visible(document.querySelector('#challenge-form'));
     const authenticated = () => {
         if (/\/login\/?$/.test(location.pathname) || phone() || otpFields().length) return false;
-        // These exact header nodes are rendered only for a nonanonymous user.
         return [...document.querySelectorAll('a[href]')].some(a => a.isConnected && new URL(a.href, location.href).origin === location.origin
             && /^\/account\/?$/.test(new URL(a.href, location.href).pathname) && a.querySelector('.header-user-icon-wrap,.logged-user'));
     };

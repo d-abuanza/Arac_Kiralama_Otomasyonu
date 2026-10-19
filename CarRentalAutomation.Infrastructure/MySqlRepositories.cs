@@ -56,13 +56,7 @@ public sealed class MySqlCollectionRepository(MySqlDatabase database, long userI
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
-            result.Add(new SavedCollection(reader.GetInt64("Id"), reader.GetString("CollectionName"),
-                new SearchCriteria(reader.GetString("PickupLocation"), reader.GetDateTime("PickupDate"), reader.GetDateTime("ReturnDate"))
-                {
-                    FuelFilter = reader.GetString("FuelFilter"),
-                    TransmissionFilter = reader.GetString("TransmissionFilter")
-                },
-                reader.GetDateTime("CreatedAt"), []));
+            result.Add(ReadCollection(reader));
         }
         return result;
     }
@@ -139,13 +133,7 @@ public sealed class MySqlCollectionRepository(MySqlDatabase database, long userI
         await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
         {
             if (!await reader.ReadAsync(cancellationToken)) return null;
-            collection = new SavedCollection(reader.GetInt64("Id"), reader.GetString("CollectionName"),
-                new SearchCriteria(reader.GetString("PickupLocation"), reader.GetDateTime("PickupDate"), reader.GetDateTime("ReturnDate"))
-                {
-                    FuelFilter = reader.GetString("FuelFilter"),
-                    TransmissionFilter = reader.GetString("TransmissionFilter")
-                },
-                reader.GetDateTime("CreatedAt"), []);
+            collection = ReadCollection(reader);
         }
         const string carsSql = "SELECT Id, Model, RentalCompany, Transmission, FuelType, Price, Currency, SourceUrl, IsMockData, ScrapedAt FROM Cars WHERE CollectionId=@id ORDER BY Id";
         await using var carsCommand = new MySqlCommand(carsSql, connection);
@@ -156,9 +144,20 @@ public sealed class MySqlCollectionRepository(MySqlDatabase database, long userI
             cars.Add(new CarOffer(carsReader.GetString("Model"), carsReader.GetString("RentalCompany"), carsReader.GetString("Transmission"),
                 carsReader.GetString("FuelType"), carsReader.GetDecimal("Price"), carsReader.GetString("Currency"),
                 carsReader.IsDBNull(carsReader.GetOrdinal("SourceUrl")) ? null : carsReader.GetString("SourceUrl"), carsReader.GetBoolean("IsMockData"))
-                { Id = carsReader.GetInt64("Id"), ScrapedAt = carsReader.GetDateTime("ScrapedAt") });
+            { Id = carsReader.GetInt64("Id"), ScrapedAt = carsReader.GetDateTime("ScrapedAt") });
         return collection with { Cars = cars };
     }
+
+    private static SavedCollection ReadCollection(MySqlDataReader reader) => new(
+        reader.GetInt64("Id"),
+        reader.GetString("CollectionName"),
+        new SearchCriteria(reader.GetString("PickupLocation"), reader.GetDateTime("PickupDate"), reader.GetDateTime("ReturnDate"))
+        {
+            FuelFilter = reader.GetString("FuelFilter"),
+            TransmissionFilter = reader.GetString("TransmissionFilter")
+        },
+        reader.GetDateTime("CreatedAt"),
+        []);
 
     private async Task EnsureFilterColumnsAsync(MySqlConnection connection, CancellationToken cancellationToken)
     {
@@ -178,7 +177,6 @@ public sealed class MySqlCollectionRepository(MySqlDatabase database, long userI
                 existsCommand.Parameters.AddWithValue("@column", column);
                 if (Convert.ToInt32(await existsCommand.ExecuteScalarAsync(cancellationToken)) != 0) continue;
 
-                // The identifiers and type definitions are fixed in this method; only the parameterized metadata lookup varies.
                 var alterSql = $"ALTER TABLE `Collections` ADD COLUMN `{column}` {definition}";
                 try
                 {
@@ -187,7 +185,6 @@ public sealed class MySqlCollectionRepository(MySqlDatabase database, long userI
                 }
                 catch (MySqlException ex) when (ex.Number == 1060)
                 {
-                    // Another app instance may have added this column after the metadata check.
                 }
             }
             _filterSchemaReady = true;

@@ -9,6 +9,7 @@
     <UserSecretsId>CarRentalAutomation.Payments.Development</UserSecretsId>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../../Shared/IyzicoAuthorization.cs" Link="Shared/IyzicoAuthorization.cs" />
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <InternalsVisibleTo Include="SandboxSetupRegressionChecks" />
   </ItemGroup>

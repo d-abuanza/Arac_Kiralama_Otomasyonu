@@ -56,36 +56,45 @@ public sealed class PaymentApiClient : IRentalPaymentApi, IDisposable
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             if (body is not null) request.Content = JsonContent.Create(body, options: Json);
             using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
-            await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token);
-            using var memory = new MemoryStream();
-            var buffer = new byte[8192];
-            int read;
-            while ((read = await stream.ReadAsync(buffer, timeout.Token)) > 0)
-            {
-                if (memory.Length + read > 1024 * 1024) throw new PaymentClientException("Ödeme sunucusu beklenmeyen büyüklükte yanıt verdi.");
-                await memory.WriteAsync(buffer.AsMemory(0, read), timeout.Token);
-            }
+            var content = await ReadResponseAsync(response, timeout.Token);
             if (!response.IsSuccessStatusCode)
-            {
-                var message = response.StatusCode == HttpStatusCode.Unauthorized ? "Ödeme erişimi doğrulanamadı. Yerel backend kurulumunu kontrol edin." : "Ödeme işlemi tamamlanamadı. Mevcut denemenin durumunu kontrol edin.";
-                if (response.StatusCode != HttpStatusCode.Unauthorized)
-                {
-                    try
-                    {
-                        using var error = JsonDocument.Parse(memory.ToArray());
-                        if (error.RootElement.ValueKind == JsonValueKind.Object && error.RootElement.TryGetProperty("error", out var value) && value.ValueKind == JsonValueKind.String && value.GetString() is { Length: > 0 and <= 700 } text &&
-                            !text.Contains(token, StringComparison.Ordinal) && !text.Contains("http", StringComparison.OrdinalIgnoreCase) && !text.Any(char.IsControl)) message = text;
-                    }
-                    catch (JsonException) { }
-                }
-                throw new PaymentClientException(message, (int)response.StatusCode);
-            }
-            return JsonSerializer.Deserialize<T>(memory.ToArray(), Json) ?? throw new PaymentClientException("Ödeme sunucusunun yanıtı boş.");
+                throw ReadErrorResponse(response.StatusCode, content, token);
+            return JsonSerializer.Deserialize<T>(content, Json) ?? throw new PaymentClientException("Ödeme sunucusunun yanıtı boş.");
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         { throw new PaymentClientException("Ödeme isteği zaman aşımına uğradı. Sonuç belirsiz; aynı araçtan devam ederek mevcut denemeyi kontrol edin."); }
         catch (Exception ex) when (ex is HttpRequestException or IOException or JsonException)
         { throw new PaymentClientException("Ödeme sunucusuna ulaşılamadı veya yanıt okunamadı. Backend ve ngrok açık olmalı. Sonucu doğrulamadan yeni kiralama başlatmayın."); }
+    }
+
+    private static async Task<byte[]> ReadResponseAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        using var memory = new MemoryStream();
+        var buffer = new byte[8192];
+        int read;
+        while ((read = await stream.ReadAsync(buffer, ct)) > 0)
+        {
+            if (memory.Length + read > 1024 * 1024) throw new PaymentClientException("Ödeme sunucusu beklenmeyen büyüklükte yanıt verdi.");
+            await memory.WriteAsync(buffer.AsMemory(0, read), ct);
+        }
+        return memory.ToArray();
+    }
+
+    private static PaymentClientException ReadErrorResponse(HttpStatusCode statusCode, byte[] content, string token)
+    {
+        var message = statusCode == HttpStatusCode.Unauthorized ? "Ödeme erişimi doğrulanamadı. Yerel backend kurulumunu kontrol edin." : "Ödeme işlemi tamamlanamadı. Mevcut denemenin durumunu kontrol edin.";
+        if (statusCode != HttpStatusCode.Unauthorized)
+        {
+            try
+            {
+                using var error = JsonDocument.Parse(content);
+                if (error.RootElement.ValueKind == JsonValueKind.Object && error.RootElement.TryGetProperty("error", out var value) && value.ValueKind == JsonValueKind.String && value.GetString() is { Length: > 0 and <= 700 } text &&
+                    !text.Contains(token, StringComparison.Ordinal) && !text.Contains("http", StringComparison.OrdinalIgnoreCase) && !text.Any(char.IsControl)) message = text;
+            }
+            catch (JsonException) { }
+        }
+        return new PaymentClientException(message, (int)statusCode);
     }
 
     public static bool ValidBaseAddress(string? address) => Uri.TryCreate(address, UriKind.Absolute, out var uri) &&
@@ -105,36 +114,4 @@ public sealed class PaymentApiClient : IRentalPaymentApi, IDisposable
         catch (CryptographicException) { throw new PaymentClientException("Yerel ödeme erişimi bu Windows kullanıcısıyla açılamadı. Backend yerel kurulumunu yeniden çalıştırın."); }
     }
     public void Dispose() => _http.Dispose();
-}
-
-public sealed class FileRentalAttemptStore : IRentalAttemptStore
-{
-    private readonly string _directory;
-    public FileRentalAttemptStore(string serverAddress, long userId, string? directory = null)
-    {
-        var scope = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(serverAddress.TrimEnd('/') + "|" + userId)))[..24];
-        _directory = Path.Combine(directory ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CarRentalAutomation", "Payments", "Attempts"), scope);
-    }
-    public async Task<RentalAttempt?> ReadAsync(long carId, CancellationToken ct)
-    {
-        var file = FileFor(carId);
-        if (!File.Exists(file)) return null;
-        try
-        {
-            var result = JsonSerializer.Deserialize<RentalAttempt>(await File.ReadAllTextAsync(file, ct));
-            if (result is null || result.CarId != carId || result.BookingRequestId == Guid.Empty || result.PaymentRequestId == Guid.Empty) throw new JsonException();
-            return result;
-        }
-        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
-        { throw new PaymentClientException("Yerel kiralama kaydı okunamadı. Tekrar ödeme yapmadan mevcut rezervasyonu kontrol edin; bu kaydı silmeyin."); }
-    }
-    public async Task SaveAsync(RentalAttempt attempt, CancellationToken ct)
-    {
-        Directory.CreateDirectory(_directory);
-        var file = FileFor(attempt.CarId);
-        var temporary = file + "." + Guid.NewGuid().ToString("N") + ".tmp";
-        await File.WriteAllTextAsync(temporary, JsonSerializer.Serialize(attempt), ct);
-        File.Move(temporary, file, overwrite: true);
-    }
-    private string FileFor(long carId) => carId > 0 ? Path.Combine(_directory, carId + ".json") : throw new ArgumentOutOfRangeException(nameof(carId));
 }

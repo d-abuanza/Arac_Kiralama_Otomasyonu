@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using CarRentalAutomation.Shared;
 
 namespace CarRentalAutomation.Payments.Api;
 
@@ -19,24 +20,55 @@ internal sealed class IyzicoCheckoutProvider(HttpClient client, ServerConfigurat
     public async Task<CheckoutState> InitializeAsync(PaymentRow payment, BuyerDetails buyer, string ip, CancellationToken cancellationToken)
     {
         configuration.RequireReady();
+        using var document = await PostAsync(InitializePath, CreateCheckoutRequest(payment, buyer, ip), cancellationToken);
+        return ReadCheckoutState(payment, document.RootElement);
+    }
+
+    private object CreateCheckoutRequest(PaymentRow payment, BuyerDetails buyer, string ip)
+    {
         var price = Money(payment.Amount);
-        var address = new { address = buyer.Address, contactName = buyer.Name + " " + buyer.Surname,
-            city = buyer.City, country = buyer.Country, zipCode = buyer.ZipCode };
-        var body = new
+        var address = new
         {
-            locale = "tr", conversationId = payment.ConversationId, price, paidPrice = price, currency = payment.Currency,
-            basketId = payment.BasketId, paymentGroup = "PRODUCT", callbackUrl = configuration.CallbackUrl,
+            address = buyer.Address,
+            contactName = buyer.Name + " " + buyer.Surname,
+            city = buyer.City,
+            country = buyer.Country,
+            zipCode = buyer.ZipCode
+        };
+        return new
+        {
+            locale = "tr",
+            conversationId = payment.ConversationId,
+            price,
+            paidPrice = price,
+            currency = payment.Currency,
+            basketId = payment.BasketId,
+            paymentGroup = "PRODUCT",
+            callbackUrl = configuration.CallbackUrl,
             enabledInstallments = new[] { 1 },
-            buyer = new { id = payment.Booking.UserId.ToString(CultureInfo.InvariantCulture), name = buyer.Name,
-                surname = buyer.Surname, identityNumber = buyer.IdentityNumber, email = buyer.Email,
-                gsmNumber = buyer.PhoneNumber, registrationAddress = buyer.Address, city = buyer.City,
-                country = buyer.Country, zipCode = buyer.ZipCode, ip },
-            billingAddress = address, shippingAddress = address,
+            buyer = new
+            {
+                id = payment.Booking.UserId.ToString(CultureInfo.InvariantCulture),
+                name = buyer.Name,
+                surname = buyer.Surname,
+                identityNumber = buyer.IdentityNumber,
+                email = buyer.Email,
+                gsmNumber = buyer.PhoneNumber,
+                registrationAddress = buyer.Address,
+                city = buyer.City,
+                country = buyer.Country,
+                zipCode = buyer.ZipCode,
+                ip
+            },
+            billingAddress = address,
+            shippingAddress = address,
             basketItems = new[] { new { id = payment.ItemId, price, name = payment.Booking.Model,
                 category1 = "Car Rental Simulation", itemType = "VIRTUAL" } }
         };
-        using var document = await PostAsync(InitializePath, body, cancellationToken);
-        var root = document.RootElement;
+    }
+
+    private CheckoutState ReadCheckoutState(PaymentRow payment, JsonElement root)
+    {
         if (Text(root, "status") == "failure")
         {
             var code = SafeError(root);
@@ -101,11 +133,9 @@ internal sealed class IyzicoCheckoutProvider(HttpClient client, ServerConfigurat
         if (path is not (InitializePath or RetrievePath)) throw new InvalidOperationException("Unsupported payment operation.");
         var json = JsonSerializer.Serialize(body, new JsonSerializerOptions { DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull });
         var nonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
-        var digest = Convert.ToHexString(HMACSHA256.HashData(Encoding.UTF8.GetBytes(configuration.SecretKey!),
-            Encoding.UTF8.GetBytes(nonce + path + json))).ToLowerInvariant();
-        var auth = "apiKey:" + configuration.ApiKey + "&randomKey:" + nonce + "&signature:" + digest;
         using var request = new HttpRequestMessage(HttpMethod.Post, ServerConfiguration.SandboxUrl + path);
-        request.Headers.TryAddWithoutValidation("Authorization", "IYZWSv2 " + Convert.ToBase64String(Encoding.UTF8.GetBytes(auth)));
+        request.Headers.TryAddWithoutValidation("Authorization",
+            IyzicoAuthorization.Create(configuration.ApiKey!, configuration.SecretKey!, nonce, path, json));
         request.Headers.Add("x-iyzi-rnd", nonce);
         request.Content = new StringContent(json, Encoding.UTF8, "application/json");
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);

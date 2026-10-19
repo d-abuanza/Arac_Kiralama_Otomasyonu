@@ -4,8 +4,6 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-// Exercise the production script without adding DOM packages or contacting the site.
-// This fixture covers the controls the script uses; it is not a browser substitute.
 const source = fs.readFileSync(path.join(__dirname, '../CarRentalAutomation.Infrastructure/Yolcu360LoginPage.js'), 'utf8');
 
 function fixture(url = 'https://yolcu360.com/login') {
@@ -170,7 +168,7 @@ test('session detection never fills a phone field or submits a retained phone fo
 test('session checks retain pending OTP without clearing, typing or verifying it', () => {
     const f = fixture(), otp = f.make('input', { id: 'sms_input' }); otp.value = '123456';
     const submit = f.make('button', { 'data-cms-key': 'button_apply' }, 'Doğrula'); f.body.append(otp, submit);
-    account(f); // Stale header markup must not override an active OTP form.
+    account(f);
     for (let check = 0; check < 3; check++) assert.equal(f.run({ action: 'state', phase: 'ready' }).state, 'otp');
     assert.equal(otp.value, '123456'); assert.equal(otp.events.length, 0); assert.equal(submit.clicks, 0);
 });

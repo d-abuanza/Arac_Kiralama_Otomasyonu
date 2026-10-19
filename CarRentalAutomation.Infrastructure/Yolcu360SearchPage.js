@@ -33,7 +33,6 @@
     const wantedCity = norm(request.locationCity);
     const cityMatches = value => !wantedCity || String(value || '').split(/[\r\n,/()\-]+/).map(norm).includes(wantedCity);
     const selection = () => window.__carRentalPickupSelection;
-    // Text assignment alone is insufficient: remember the exact normal suggestion click for this search.
     const locationMatches = () => !!wanted && selection()?.operationId === request.operationId
         && selection().location === request.location && norm(loc?.value) === selection().pageName
         && acceptedNames.includes(norm(loc?.value)) && !visible(layer)
@@ -51,7 +50,6 @@
     const formMatches = () => locationMatches() && timeMatches() && dateMatches(0,request.pickupDate) && dateMatches(1,request.returnDate) && !visible(calendar);
     const accountMarker = [...document.querySelectorAll('a[href]')].some(a => {
         const u = new URL(a.href, location.href);
-        // These nodes are conditional on the site's nonanonymous account state, also inside a collapsed mobile menu.
         return u.origin === location.origin && /^\/account\/?$/.test(u.pathname) && !!a.querySelector('.header-user-icon-wrap,.logged-user');
     });
     switch (request.action) {
@@ -74,8 +72,6 @@
         case 'location-select': {
             if (locationMatches()) return { state: 'location-selected' };
             const options = [...(layer?.querySelectorAll('[role="option"]') || [])].filter(e => usable(e) && !e.classList.contains('location-layer__row--history'));
-            // The published SearchLocationLayer renders the canonical place name above a city subtitle.
-            // Search rows have row-title; popular rows use the first/last spans in their flex-col wrapper.
             const placeName = e => text(e.querySelector('.location-layer__row-title')) || (e.innerText || '').split('\n')[0].trim();
             const exact = options.filter(e => acceptedNames.includes(norm(placeName(e))) && cityMatches(e.innerText || ''));
             if (exact.length > 1) return { state: 'location-ambiguous' };
@@ -145,7 +141,6 @@
             const last=cards.at(-1);
             if (last) {
                 last.scrollIntoView({block:'end'});
-                // A repeated scroll to the same point emits no new native event. Notify the normal lazy list handler.
                 window.dispatchEvent(new Event('scroll'));
             }
             const more=[...document.querySelectorAll('button')].find(e=>visible(e) && /^(daha fazla (göster|yükle)|load more|show more)$/i.test(text(e)));

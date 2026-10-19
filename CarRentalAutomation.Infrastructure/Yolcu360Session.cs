@@ -60,7 +60,7 @@ public sealed partial class Yolcu360Browser
                 previous = null;
                 continue;
             }
-            if (page.State is "authenticated" or "phone" or "otp" or "signed-out" or "registration" or "expired")
+            if (IsSettledLoginState(page.State))
             {
                 if (previous != page.State) { previous = page.State; stableSince = DateTime.UtcNow; }
                 else if (DateTime.UtcNow - stableSince >= TimeSpan.FromMilliseconds(600)) return page;
@@ -79,6 +79,9 @@ public sealed partial class Yolcu360Browser
 
     private Task EnsureSitePageAsync(CancellationToken token) => Control.Source is null || Control.Source.Scheme == "about"
         ? NavigateAsync("https://yolcu360.com/", token) : Task.CompletedTask;
+
+    private static bool IsSettledLoginState(string state) =>
+        state is "authenticated" or "phone" or "otp" or "signed-out" or "registration" or "expired";
 
     private async Task<BrowserOperationResult> ValidateAuthenticatedSessionAsync(CancellationToken token)
     {
@@ -121,7 +124,6 @@ public sealed partial class Yolcu360Browser
 
     private async Task ResolveHumanVerificationAsync(CancellationToken token)
     {
-        // Managed widgets may clear themselves; only expose a challenge that remains present.
         await Task.Delay(350, token);
         if ((await LoginDomAsync("state", token, phase: "ready")).State != "challenge") return;
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, _lifetimeCancellation.Token);
@@ -139,7 +141,7 @@ public sealed partial class Yolcu360Browser
             while (DateTime.UtcNow < until)
             {
                 var page = await LoginDomAsync("state", linked.Token, phase: "ready");
-                if (page.State is "authenticated" or "phone" or "otp" or "signed-out" or "registration" or "expired")
+                if (IsSettledLoginState(page.State))
                 {
                     if (previous != page.State) { previous = page.State; stableSince = DateTime.UtcNow; }
                     else if (DateTime.UtcNow - stableSince >= TimeSpan.FromMilliseconds(500))
@@ -173,9 +175,8 @@ public sealed partial class Yolcu360Browser
         {
             try { await initializing; }
             catch (OperationCanceledException) { }
-            catch (Exception) { /* Initialization error is already reported to the UI. */ }
+            catch (Exception) { }
         }
-        // All browser cleanup (including OTP clearing) finishes before the host/control is disposed.
         await _operationLock.WaitAsync();
         _operationLock.Release();
     }
